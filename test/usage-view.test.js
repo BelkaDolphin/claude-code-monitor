@@ -29,6 +29,7 @@ import {
   modelSeries,
   windowOf,
 } from '../src/usage-view.js';
+import { CCUSAGE_VERSION } from '../src/ccusage.js';
 
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
 const SID2 = 'bbbbbbbb-2222-3333-4444-555555555555';
@@ -694,10 +695,46 @@ describe('ccusage comparison', () => {
       cache: new CcusageCache({ runner }),
       onError: (where, err) => seen.push([where, String(err)]),
     });
-    assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR });
+    assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR, notInstalled: false, ccusageVersion: CCUSAGE_VERSION });
     assert.equal(seen.length, 1);
     assert.equal(seen[0][0], 'usage:ccusage');
     assert.match(seen[0][1], /npm ERR/, 'the detail goes to onError, never to the browser');
+  });
+
+  test('"ccusage is not installed" is distinguishable from every other failure', async () => {
+    const d = view({ days: 3, cache: new UsageFileCache() });
+    const seen = [];
+    const runner = async () => ({
+      ok: false,
+      data: null,
+      notInstalled: true,
+      error: 'ccusage@20.0.20 is not installed (npx refused to download it)',
+    });
+    const cmp = await buildCcusageComparison({
+      view: d,
+      cache: new CcusageCache({ runner }),
+      onError: (where, err) => seen.push([where, String(err)]),
+    });
+    // Same fixed string as any other failure - the flag is what differs, and
+    // the version the user must install comes from the server, not the page.
+    assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR, notInstalled: true, ccusageVersion: CCUSAGE_VERSION });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0][0], 'usage:ccusage');
+  });
+
+  test('a not-installed run is not cached: the button can retry after an install', async () => {
+    const d = view({ days: 3, cache: new UsageFileCache() });
+    let runs = 0;
+    const runner = async () => {
+      runs += 1;
+      return runs === 1
+        ? { ok: false, data: null, notInstalled: true, error: 'not installed' }
+        : { ok: true, data: { daily: [] }, error: null, notInstalled: false };
+    };
+    const cache = new CcusageCache({ runner });
+    assert.equal((await buildCcusageComparison({ view: d, cache })).notInstalled, true);
+    assert.equal((await buildCcusageComparison({ view: d, cache })).ok, true);
+    assert.equal(runs, 2);
   });
 
   test('a timeout is just another failure to the browser', async () => {
@@ -714,7 +751,7 @@ describe('ccusage comparison', () => {
       onError: (where, err) => seen.push(String(err)),
     });
     assert.equal(passed.timeoutMs, 60_000, 'the 60s budget reaches the runner');
-    assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR });
+    assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR, notInstalled: false, ccusageVersion: CCUSAGE_VERSION });
     assert.match(seen[0], /timed out after 60000ms/);
   });
 
@@ -722,7 +759,7 @@ describe('ccusage comparison', () => {
     const d = view({ days: 3, cache: new UsageFileCache() });
     const runner = async () => { throw new Error('spawn EINVAL'); };
     const cmp = await buildCcusageComparison({ view: d, cache: new CcusageCache({ runner }) });
-    assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR });
+    assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR, notInstalled: false, ccusageVersion: CCUSAGE_VERSION });
   });
 
   test('a second call inside the TTL does not run ccusage again', async () => {
@@ -805,7 +842,7 @@ describe('ccusage comparison', () => {
         cache,
         onError: (w, e) => seen.push([w, String(e)]),
       });
-      assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR }, `accepted ${JSON.stringify(bad)}`);
+      assert.deepEqual(cmp, { ok: false, error: CCUSAGE_ERROR, notInstalled: false, ccusageVersion: CCUSAGE_VERSION }, `accepted ${JSON.stringify(bad)}`);
       assert.equal(seen.length, 1);
     }
     assert.equal(runs, 0, 'the runner was never reached');

@@ -34,7 +34,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { ccusageDaily, normalizeDailyRow } from './ccusage.js';
+import { CCUSAGE_VERSION, ccusageDaily, normalizeDailyRow } from './ccusage.js';
 import { parseFile, ParseStats } from './parser.js';
 import {
   localDateKey,
@@ -674,11 +674,15 @@ export function buildUsageView(opts = {}) {
 /**
  * ccusage, on demand only.
  *
- * `npx -y ccusage@latest` downloads and runs a third-party CLI, so it is never
- * on the request path of the dashboard itself (known constraint 8). This runs
- * it when the user presses the button, caches the answer for ten minutes per
- * (since, until), and lets concurrent callers share a single run - two tabs
- * pressing the button together must not start two npx downloads.
+ * `npx --no ccusage@20.0.20` runs a third-party CLI over the whole transcript
+ * corpus, so it is never on the request path of the dashboard itself (known
+ * constraint 8). This runs it when the user presses the button, caches the
+ * answer for ten minutes per (since, until), and lets concurrent callers share
+ * a single run - two tabs pressing the button together must not start two runs.
+ *
+ * `--no` means nothing is ever downloaded: if ccusage is not installed the run
+ * fails with `notInstalled`, which travels all the way to the footnote as
+ * "install it first" rather than as a bare "ccusage unavailable".
  */
 export class CcusageCache {
   /**
@@ -718,7 +722,7 @@ export class CcusageCache {
       try {
         res = await this.runner({ since, until, timeoutMs: this.timeoutMs });
       } catch (err) {
-        res = { ok: false, data: null, error: String(err && err.message ? err.message : err) };
+        res = { ok: false, data: null, error: String(err && err.message ? err.message : err), notInstalled: false };
       }
       const fetchedAt = this.now();
       // Failures are NOT cached: the button must be able to retry.
@@ -747,6 +751,19 @@ function ccusageRows(data) {
     .filter((r) => typeof r.date === 'string' && DATE_RE.test(r.date));
 }
 
+/**
+ * The only shape a failed cross-check ever takes.
+ *
+ * `error` stays the single fixed string (nothing from npm reaches the browser);
+ * `notInstalled` tells the UI to print the install line instead, and
+ * `ccusageVersion` is the version that line must name - the frontend never
+ * hard-codes it.
+ * @param {boolean} notInstalled
+ */
+function ccusageFailure(notInstalled) {
+  return { ok: false, error: CCUSAGE_ERROR, notInstalled, ccusageVersion: CCUSAGE_VERSION };
+}
+
 function metricsOf(t) {
   const o = {};
   for (const m of METRICS) o[m] = num(t?.[m]);
@@ -772,13 +789,15 @@ export async function buildCcusageComparison(args = {}) {
   // Both strings go straight onto ccusage's argv. Nothing but this shape does.
   if (!DATE_RE.test(String(since)) || !DATE_RE.test(String(until))) {
     onError('usage:ccusage', new Error(`refusing to pass dates to ccusage: ${since}..${until}`));
-    return { ok: false, error: CCUSAGE_ERROR };
+    return ccusageFailure(false);
   }
 
   const res = await cache.daily(since, until);
   if (!res || !res.ok) {
     onError('usage:ccusage', new Error(String(res && res.error ? res.error : 'ccusage failed')));
-    return { ok: false, error: CCUSAGE_ERROR };
+    // `notInstalled` is the ONE thing a failure says beyond the fixed string,
+    // and it leaks nothing: it is our own npx refusal, not npm's error text.
+    return ccusageFailure(!!(res && res.notInstalled));
   }
 
   const theirs = new Map(ccusageRows(res.data).map((r) => [r.date, r]));

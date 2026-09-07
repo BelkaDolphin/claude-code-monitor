@@ -408,8 +408,11 @@ export function createRequestHandler(deps) {
   }
 
   /**
-   * GET /api/usage/ccusage?days=N - runs `npx ccusage` and diffs it against us.
-   * Never on the dashboard's own path: only when the user asks (constraint 8).
+   * GET /api/usage/ccusage?days=N - runs `npx --no ccusage@<pinned>` and diffs
+   * it against us. Never on the dashboard's own path: only when the user asks
+   * (constraint 8), and never a download - if ccusage is not installed the body
+   * carries `notInstalled: true` plus the `ccusageVersion` the footnote tells
+   * the user to install.
    */
   async function handleUsageCcusage(req, res) {
     const days = usageDaysOf(req);

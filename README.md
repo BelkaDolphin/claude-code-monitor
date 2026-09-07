@@ -74,8 +74,11 @@ http://127.0.0.1:47321/?t=3bcce684……（64桁のhex）
   サブエージェントが別のモデルで回っていてもラベルは変わらない。
   当日の行は `*` 付き（進行中）。transcript が消えて自分の保存値から出している日は
   「保存値」、スキャンが保存値より小さい日は「一部欠損」バッジが付く。
-  「ccusage と突合」ボタンを押したときだけ `npx ccusage` を実行し、
+  「ccusage と突合」ボタンを押したときだけ ccusage を実行し、
   指標ごとの差分と ccusage のコストを列に足す（10分キャッシュ・60秒タイムアウト）。
+  実行するのは `npx --no ccusage@20.0.20` で、**ダウンロードは一切しない**。
+  事前に `npm i -g ccusage@20.0.20`（または npx キャッシュに存在すること）が必要で、
+  無ければ脚注に「`npm i -g ccusage@20.0.20` を実行してから再度押す」と出して終わる。
   集計は 30日 / 100ファイル / 27.5k行 で初回 0.8秒、以降 25ms（ファイル単位キャッシュ）。
 
 ### 通知設定
@@ -114,7 +117,7 @@ http://127.0.0.1:47321/?t=3bcce684……（64桁のhex）
 | `/api/tree/<sessionId>` | サブエージェントツリー1本（hooks + meta.json + transcript の合成） |
 | `/api/tools/<sessionId>?agent=<agentId>&limit=N` | ツール実行ログの末尾（既定100、1〜500） |
 | `/api/usage?days=N` | 日別・モデル別・セッション別のトークン使用量（既定30日、1〜90にクランプ。今日を含む N 暦日） |
-| `/api/usage/ccusage?days=N` | 同じ窓を ccusage と突合。要求時のみ `npx ccusage` を実行し、失敗は `ccusage unavailable` の一語 |
+| `/api/usage/ccusage?days=N` | 同じ窓を ccusage と突合。要求時のみ `npx --no ccusage@20.0.20` を実行（ダウンロード無し）し、失敗は `ccusage unavailable` の一語。未インストールのときだけ `notInstalled: true` と `ccusageVersion` を添える |
 
 `/api/usage` の応答の `days` は**日行の配列**であり、窓の長さは
 **両ルートとも `windowDays`** で返す（同じ名前が2つのルートで別の意味に
@@ -136,6 +139,9 @@ GET / HEAD 以外は 405。`/api/usage` は結果を `<monitorDir>/usage/daily.j
   スクリーンショットを撮るならアドレスバーを入れない。
 - ダッシュボードは読み取り専用。書き込み系のエンドポイントは無く、GET/HEAD 以外は 405。
 - 外部への通信は一切しない（Webフォントも CDN も無し）。CSP でも塞いである。
+  唯一の外部プロセス起動は「ccusage と突合」ボタンだが、`npx --no` なので
+  **同意なくダウンロードすることはない**。手元に無ければ何も取りに行かず、
+  `npm i -g ccusage@20.0.20` を案内して終わる。
 - 他サイトの frame に入れられない（`X-Frame-Options: DENY` と CSP `frame-ancestors 'none'`）。
 - サーバが予期せぬ例外で倒れた場合は、**黙って消えずに**理由を表示し、
   ポートを解放して終了コード1で終わる。古い画面を見て「異常なし」と
@@ -368,6 +374,7 @@ node src/cli.js list --days 7
 node src/cli.js tree ea1b82f5
 
 # 日付別使用量を ccusage と突合（当日分は進行中なので差が出るのが正常）
+# 事前に npm i -g ccusage@20.0.20 が必要。無ければダウンロードせずに失敗する
 node src/cli.js usage --daily --since 2026-08-14 --compare-ccusage
 
 # エラーになったツール呼び出しだけ
@@ -382,7 +389,7 @@ node src/cli.js stats ea1b82f5
 ```bash
 npm test                                  # 単体テスト（合成fixtureのみ、実データ不要）
 
-# 統合テスト（実データを読み、ccusage を npx で起動する）
+# 統合テスト（実データを読み、インストール済みの ccusage を npx で起動する）
 CLAUDE_MONITOR_IT=1 node --test test/integration.test.js
 ```
 

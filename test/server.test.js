@@ -19,6 +19,7 @@ import { Collector } from '../src/collector.js';
 import { COOKIE_NAME } from '../src/auth.js';
 import { localDateKey } from '../src/paths.js';
 import { CcusageCache } from '../src/usage-view.js';
+import { CCUSAGE_SPEC, CCUSAGE_VERSION } from '../src/ccusage.js';
 
 const SID = 'bbbbbbbb-1111-2222-3333-555555555555';
 /** A transcript the collector never adopts (no hook events name it). */
@@ -440,6 +441,32 @@ describe('M4: GET /api/usage/ccusage', () => {
     assert.equal(JSON.parse(res.body).error, 'ccusage unavailable');
     assert.equal(/npm ERR/.test(res.body), false, 'the detail must not reach the browser');
     assert.ok(seen.some(([w]) => w === 'http:usage:ccusage'), `expected the detail on onError, got ${JSON.stringify(seen)}`);
+  });
+
+  test('a missing ccusage answers notInstalled plus the version to install', async () => {
+    ccRunner = async () => ({
+      ok: false,
+      data: null,
+      notInstalled: true,
+      error: `${CCUSAGE_SPEC} is not installed (npx refused to download it)`,
+    });
+    const res = await get('/api/usage/ccusage?days=7', { headers: authed() });
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.ok, false);
+    assert.equal(body.error, 'ccusage unavailable');
+    assert.equal(body.notInstalled, true);
+    // The page prints `npm i -g ccusage@<this>`; the number is the server's.
+    assert.equal(body.ccusageVersion, CCUSAGE_VERSION);
+    assert.equal(/npx canceled|npm error/.test(res.body), false, 'no npm text reaches the browser');
+    ccRunner = async () => ({ ok: true, data: { daily: [] }, error: null });
+  });
+
+  test('an ordinary failure is not notInstalled', async () => {
+    ccRunner = async () => ({ ok: false, data: null, error: 'exit code 3' });
+    const body = JSON.parse((await get('/api/usage/ccusage?days=7', { headers: authed() })).body);
+    assert.equal(body.notInstalled, false);
+    ccRunner = async () => ({ ok: true, data: { daily: [] }, error: null });
   });
 
   test('a runner that rejects does not take the listener down', async () => {
@@ -1183,6 +1210,20 @@ describe('M4: the Usage view the server actually hands out', () => {
     assert.equal(/<style[\s>]/i.test(html), false);
     assert.equal(/\son[a-z]+\s*=/i.test(html), false);
     assert.equal(/https?:\/\//i.test(html.replace(/<link rel="icon"[^>]*>/, '')), false);
+  });
+
+  test('the ccusage footnote promises no download and tells the user how to install', () => {
+    const src = bodyOf(js, 'function loadCcusage() {');
+    // The button never downloads anything any more, so the old warning is a lie.
+    assert.equal(/ダウンロード/.test(src), false, 'the footnote still mentions an npx download');
+    assert.match(src, /'ccusage を実行している'/);
+    assert.match(src, /ccusage が見つからない。npm i -g/);
+    assert.match(src, /d\.notInstalled/);
+    // The version is the server's answer, never a copy in the page.
+    assert.match(src, /d\.ccusageVersion/);
+    assert.equal(new RegExp(CCUSAGE_VERSION.replace(/\./g, '\\.')).test(js), false,
+      'the ccusage version is hard-coded in app.js');
+    assert.match(src, /setText\(/);
   });
 
   test('the M4 client code uses no forbidden DOM sink either', () => {

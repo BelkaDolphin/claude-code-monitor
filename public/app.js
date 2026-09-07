@@ -1896,12 +1896,20 @@
   function loadCcusage() {
     if (usage.ccLoading) return;
     usage.ccLoading = true;
-    setText($('usage-ccfoot'), 'ccusage を実行している（npx のダウンロードで時間がかかることがある）');
+    setText($('usage-ccfoot'), 'ccusage を実行している');
     apiJson('/api/usage/ccusage?days=' + usage.days)
       .then(function (d) {
         usage.ccLoading = false;
         if (!d || !d.ok) {
           usage.cc = null;
+          if (d && d.notInstalled) {
+            // The server never downloads ccusage (npx --no), so "not there" is
+            // an instruction, not an error. The version comes from the server:
+            // it is pinned in src/ccusage.js and must not be copied here.
+            var spec = 'ccusage' + (d.ccusageVersion ? '@' + d.ccusageVersion : '');
+            setText($('usage-ccfoot'), 'ccusage が見つからない。npm i -g ' + spec + ' を実行してから再度押す');
+            return;
+          }
           setText($('usage-ccfoot'), 'ccusage と突合できなかった（' + ((d && d.error) || 'ccusage unavailable') + '）');
           return;
         }

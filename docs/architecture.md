@@ -13,7 +13,7 @@
 | 2 | **`~/.claude/sessions/<pid>.json`** + PID生存 | プロセス単位の生死、`status`、cwd、バージョン | **公式ドキュメント未記載**。将来消えうる |
 | 3 | **transcript jsonl** (`~/.claude/projects/**/*.jsonl`) | ツリー構造、ツールログ、トークン数 | 公式に「内部形式・非安定」と明言 |
 | 補 | **statusline sidecar** (`<monitorDir>/statusline/*.json`) | `rate_limits`、context使用率、コスト | 他のどこにも存在しない唯一の源 |
-| 補 | **ccusage** (`npx ccusage`) | 突合用の第三者集計 | 検証専用。実行時依存ではない |
+| 補 | **ccusage** (`npx --no ccusage@20.0.20`) | 突合用の第三者集計 | 検証専用。実行時依存ではない |
 
 ライブ状態は必ず hooks を第一とし、jsonl は「ディスクに書かれた後の事実」を補う位置づけ。
 
@@ -453,8 +453,12 @@ UI の「取込エラー」には数えない（データが壊れている、�
    `~/.claude/.last-cleanup` が更新され、171ファイル→146ファイル、
    30日より古い日付のデータが消えた。過去分の集計は永続ではない。
    長期保存が必要なら独自にスナップショットを取る必要がある。
-8. **ccusage は突合専用。** `npx -y ccusage@latest` を spawn するため
-   ネットワークとダウンロードが要る。ダッシュボードの実行時依存にはしない。
+8. **ccusage は突合専用。** `npx --no ccusage@20.0.20` を spawn する。
+   `--no` なので**ダウンロードは一切しない**（PATH か npx キャッシュに
+   無ければ npx が exit 1 で断る）。ダッシュボードの実行時依存にはしない。
+   バージョンは固定である。固定版で ccusage の JSON の形が変わったら突合は
+   壊れるが、**自前集計には一切影響しない**（突合は検証専用で、表示している
+   数字は常に自分で数えたものである）。
 
 ### M2 で新たに判明した制約
 
@@ -1391,9 +1395,23 @@ and the other changed」がこれを固定している（親をキャッシュ�
 
 ### 8.5 ccusage は要求されたときだけ
 
-既知の制約8のとおり `npx -y ccusage@latest` はダウンロードとネットワークを要するので、
-ダッシュボードの実行時依存にはしない。ボタンを押したときだけ動く。
+既知の制約8のとおり ccusage は第三者の CLI なので、ダッシュボードの実行時依存には
+しない。ボタンを押したときだけ動く。
 
+- **起動するのは `npx --no ccusage@20.0.20 <cmd> --json`。** `-y` ではなく
+  `--no` である。`--no` は「無ければ落とさずに諦めろ」の意味で、PATH にも
+  npx キャッシュ（`%LOCALAPPDATA%\npm-cache\_npx`）にも無いときは
+  **ネットワークに出ずに** exit 1 と
+  `npx canceled due to missing packages and no YES option: ["ccusage@20.0.20"]`
+  を stderr に出す（npm 11.6.2 / Windows で実測）。ユーザーの同意なく
+  ダウンロードしないための選択である。バージョンも `@latest` ではなく固定で、
+  `CCUSAGE_VERSION`（`src/ccusage.js`）の1箇所だけに置く。
+- **この stderr を検出して `notInstalled: true` を立てる。** `runCcusage` →
+  `ccusageDaily` → `CcusageCache.daily` → `buildCcusageComparison` →
+  `/api/usage/ccusage` の JSON まで素通しで運び、失敗の本文（`error`）は
+  従来どおり固定文字列のままにする。ブラウザはこのフラグと、同時に返す
+  `ccusageVersion` を見て「`npm i -g ccusage@20.0.20` を実行してから再度押す」と
+  出す。**バージョン文字列をフロントに書かない**ため、番号はサーバが返す。
 - **日付は `^\d{4}-\d{2}-\d{2}$` で検証してから** argv に載せる（`ccusage.js` の
   `SAFE_ARG` に加えて、こちら側でも形を固定する）。
 - タイムアウト **60秒**。時間切れのときは `child.kill()` ではなく

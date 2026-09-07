@@ -17,7 +17,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { makeTmpDir } from './helpers.js';
-import { runCcusage, SAFE_ARG, parseCcusageJson } from '../src/ccusage.js';
+import {
+  CCUSAGE_SPEC,
+  CCUSAGE_VERSION,
+  ccusageCommand,
+  isNotInstalled,
+  parseCcusageJson,
+  runCcusage,
+  SAFE_ARG,
+} from '../src/ccusage.js';
 
 const WIN = process.platform === 'win32';
 
@@ -62,6 +70,93 @@ async function waitGone(pid, ms = 3000) {
   }
   return !alive(pid);
 }
+
+describe('the command line: pinned, and never a download', () => {
+  test('both platforms pass --no and the pinned version, and neither passes -y or @latest', () => {
+    const args = ['daily', '--json', '--since', '2026-09-01'];
+    const win = ccusageCommand(args, 'win32');
+    const posix = ccusageCommand(args, 'linux');
+
+    // Windows goes through cmd.exe because npx is a .cmd shim.
+    assert.equal(win.file, 'cmd.exe');
+    assert.equal(win.verbatim, true);
+    const cmdline = win.args[win.args.length - 1];
+    assert.equal(cmdline, `npx --no ${CCUSAGE_SPEC} daily --json --since 2026-09-01`);
+
+    assert.equal(posix.file, 'npx');
+    assert.equal(posix.verbatim, false);
+    assert.deepEqual(posix.args, ['--no', CCUSAGE_SPEC, ...args]);
+
+    for (const line of [cmdline, posix.args.join(' ')]) {
+      assert.match(line, /(^| )--no( |$)/, 'npx must be told not to install');
+      assert.equal(/(^| )-y( |$)/.test(line), false, '-y would download without asking');
+      assert.equal(/@latest/.test(line), false, 'the version must be pinned');
+      assert.ok(line.includes(`ccusage@${CCUSAGE_VERSION}`));
+    }
+  });
+
+  test('the version lives in exactly one place', () => {
+    assert.match(CCUSAGE_VERSION, /^\d+\.\d+\.\d+$/);
+    assert.equal(CCUSAGE_SPEC, `ccusage@${CCUSAGE_VERSION}`);
+  });
+
+  test('every SAFE_ARG-legal argument survives the join unquoted', () => {
+    const { args } = ccusageCommand(['blocks', '--json', '--active'], 'win32');
+    assert.equal(/["'^&|<>]/.test(args[args.length - 1]), false, 'nothing needing escaping got in');
+  });
+});
+
+describe('runCcusage: ccusage is not installed', () => {
+  /** npx's real refusal, verbatim from npm 11.6.2 on Windows. */
+  const REFUSAL = `npm error npx canceled due to missing packages and no YES option: ["${CCUSAGE_SPEC}"]`;
+
+  /** A command that prints `text` on stderr and exits with `code`. */
+  function failingCommand(text, code) {
+    const file = path.join(tmp.dir, `fail-${code}-${text.length}.js`);
+    fs.writeFileSync(file, `process.stderr.write(${JSON.stringify(text)});\nprocess.exit(${code});\n`, 'utf8');
+    return WIN
+      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node ${file}`] }
+      : { file: 'node', args: [file] };
+  }
+
+  test('the npx refusal is reported as notInstalled, not as a bare exit code', async () => {
+    const res = await runCcusage([], { timeoutMs: 20000, command: failingCommand(REFUSAL, 1) });
+    assert.equal(res.ok, false);
+    assert.equal(res.notInstalled, true);
+    assert.equal(res.timedOut, false);
+    assert.match(res.error, /is not installed/);
+    assert.match(res.error, new RegExp(CCUSAGE_VERSION.replace(/\./g, '\\.')));
+  });
+
+  test('any other failure is NOT notInstalled', async () => {
+    const res = await runCcusage([], { timeoutMs: 20000, command: failingCommand('boom', 3) });
+    assert.equal(res.ok, false);
+    assert.equal(res.notInstalled, false);
+    assert.equal(res.error, 'exit code 3');
+  });
+
+  test('a success is never notInstalled, and neither is a rejected argument', async () => {
+    const quick = path.join(tmp.dir, 'ok.js');
+    fs.writeFileSync(quick, 'process.stdout.write("{}");\n', 'utf8');
+    const command = WIN
+      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node ${quick}`] }
+      : { file: 'node', args: [quick] };
+    const ok = await runCcusage([], { timeoutMs: 20000, command });
+    assert.equal(ok.ok, true);
+    assert.equal(ok.notInstalled, false);
+
+    const unsafe = await runCcusage(['&& calc'], { timeoutMs: 500, command });
+    assert.equal(unsafe.notInstalled, false);
+  });
+
+  test('the detector matches the message itself, not our own wording', () => {
+    assert.equal(isNotInstalled(REFUSAL), true);
+    assert.equal(isNotInstalled('npm ERR! npx canceled due to missing packages'), true);
+    assert.equal(isNotInstalled('npm error code E404'), false);
+    assert.equal(isNotInstalled(''), false);
+    assert.equal(isNotInstalled(undefined), false);
+  });
+});
 
 describe('runCcusage: a run that never returns', () => {
   test('times out with the fixed error and takes the whole process tree with it', async () => {
