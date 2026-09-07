@@ -35,6 +35,7 @@ src/
   hooks-ingest.js       events/*.jsonl の読み取り・正規化・状態fold
   statusline-sidecar.js statusline sidecar の読み取りと rate_limits 抽出
   installer.js          settings.json への hooks / statusLine の冪等な追加・削除
+                        (冪等性キーはスクリプトのパス。node は process.execPath)
   ccusage.js            ccusage CLI ラッパ (突合専用)
   cli.js                サブコマンド群
 
@@ -165,6 +166,60 @@ so scripts that parse these files directly can break on any release."
 
 `monitor-hook.js` は **stdout/stderr に一切出力せず、必ず exit 0** する。
 hook の stdout は会話に注入されうるため、沈黙が唯一安全な出力。
+
+### 3.6 installer: 何を書き、何を書かないか
+
+**hooks の `command` はシェル経由で起動される。** `type: "command"` の文字列は
+Claude Code がそのままシェルに渡すので、ここに埋めるパスは
+`autostart.js` の `.vbs` / `schtasks /TR` と**まったく同じ危険**を持つ。
+`assertCommandSafePath()` が1箇所で拒否する:
+
+| 場面 | 拒否する文字 | 理由 |
+|---|---|---|
+| 常に | `"` / CR / LF / NUL | Windows のパスに入りえない。入っているならパスではない |
+| Windows | `%` | `cmd.exe` は二重引用符の**中でも** `%VAR%` を展開する |
+| POSIX | `$` `` ` `` `\` `!` | `sh` は二重引用符の中でこれらを生かしたままにする |
+
+`\` を常に拒否しないのは、**Windows のパスがすべて `\` で出来ている**からである。
+「シェル」は OS ごとに別のプログラムであり、片方で無害な文字が
+もう片方では危険、というだけのこと。拒否は `planInstall` / `planUninstall` の中で
+起きるので、**バックアップを取る前・1バイトも書く前**に失敗する。`--dry-run` も同じ。
+
+**コマンドは `node` ではなく `process.execPath` を埋める。** 素の `node` は
+フックを起動したプロセスの PATH 次第で解決される。GUI から起動した Claude Code は
+バージョンマネージャ（nvm / fnm / volta）が PATH を通すシェルプロファイルを
+継承しないので、**他は全部動くのに hooks だけが黙って死ぬ**。
+`autostart.js` は最初から `process.execPath` を焼き込んでいた。同じ規則を1階層上でも通す。
+
+```
+"C:\Program Files\nodejs\node.exe" "D:\develop\Claude監視\hooks\monitor-hook.js"
+```
+
+**その結果、冪等性キーはコマンド文字列ではなくスクリプトのパスになった**
+（`ownsCommand()`）。旧形式 `node "<script>"` で登録済みのユーザーが再実行したとき、
+コマンド全文で比較すると「別物」に見えて**2本目が追加され、フックが毎回2回走る**。
+スクリプトのパスで見れば旧形式も「自分のもの」なので、**その場で書き換える**
+（`replaced`）。`async` / `timeout` は残す —— SessionEnd が 1.5秒予算に収まるための
+設定であって、我々が消してよいものではない。`uninstall-hooks` も同じ判定で消すので、
+旧形式のエントリも掃除できる。
+
+**`statusLine` は1つしかない。** hooks は配列なので既存のものの隣に足せばよいが、
+`statusLine` はスロットが1つで、ユーザーが既に何かに使っている可能性がある。
+かつては無条件に上書きし、`uninstall` は自分のコマンドと一致するときだけ消していた
+（＝**元に戻らない**）。現在:
+
+- 既存が**我々のもの**（スクリプトパス一致）なら黙って更新する（`updated`）。
+  node を入れ替えた後の再実行がこれに当たる。
+- 既存が**他人のもの**で `--force-statusline` が無ければ **触らない**（`kept-foreign`）。
+  hooks だけ登録し、既存の値を出して「奪うなら `--force-statusline`」と言う。
+- `--force-statusline` のときは元の値を `settings.json` のトップレベル
+  `_claudeMonitorStatusLineBackup` に退避してから置換する（`replaced`）。
+  `uninstall-hooks` はここから**復元**する（`restored`）。
+  退避キーを消すのは我々が `statusLine` に手を付けた枝だけ —— 我々のものでない
+  `statusLine` の隣にある退避キーは、我々が消してよいものではない。
+
+`--dry-run` はこの判断まで含めて同じ結果を出す。「書くときになって初めて拒否される」
+のでは dry-run の意味がない。
 
 ---
 
@@ -649,6 +704,39 @@ UI の「取込エラー」には数えない（データが壊れている、�
     （結果の `error` に理由が入る）。**その回の呼び出しは例外を投げない**ので、
     呼び出し側のエラーカウンタには乗らない。1チャンク目の失敗は従来どおり
     throw する。
+
+### 公開前レビュー（バッチB）で新たに判明した制約
+
+39. **CLI のフラグは宣言されたものしか受け付けない。** 引数パーサは
+    「次のトークンを直前のフラグの値にする」だけで、どのフラグが値を取るのかを
+    知らなかった。結果として `install-hooks --dry-run foo` は `dry-run` が
+    文字列 `"foo"` になって `=== true` の判定を外れ、**本当に settings.json を
+    書いた**。`--dry-runn` のようなタイポは黙って通り、`install-autostart` が
+    タスクを登録した。`usage --json <id>` は id が `--json` に吸われ、
+    セッション1本のつもりが全期間の集計になった。
+    現在は `FLAGS` テーブルが唯一の宣言場所で、種類は3つ:
+    **bool**（値を取らない。`--flag=false` は可、`--flag false` は不可）、
+    **value**（値が無ければエラー）、**optional**（`--log-file` / `--token-file`
+    だけ。単独なら既定パス）。未知のフラグは**終了コード2**で拒否し、
+    そのとき**次のトークンは食わない**（タイポがセッションIDまで巻き込まないため）。
+    `FLAGS` と `--help` の本文が同じフラグ集合であることはテストで担保している。
+    **互換性の変更**: 真偽フラグの空白区切り形式（`--open false`）は無くなった。
+    これがバグそのものだったので、`--open=false` に置き換えること。
+40. **`--port` は 0..65535 の整数でなければ拒否される（終了コード2）。**
+    `resolvePort()` は不正値を既定の 47321 に丸めていたので、
+    `install-autostart --port 70000` が**既定ポートでログオンタスクを登録し、
+    それが `--dry-run` の出力にも出なかった**。また `resolvePort(false)`
+    （＝値なしの `--port`）は `Number(false) === 0` でポート0になった。
+    現在、明示値が port でなければ `resolvePort()` は throw する。
+    `0` は「OSに選ばせる」の意味で有効（テストがこれで bind する）。
+    環境変数 `CLAUDE_MONITOR_PORT` だけは従来どおり寛容 —— これは
+    「いまユーザーが打っている指示」ではなく環境であり、シェルの設定に紛れた値の
+    せいでログオンタスクが**起動すらしない**のは割に合わない。
+41. **`install-hooks` は node のパスを焼き込むので、node を入れ替えたら
+    再実行が要る。** 3.6 を見よ。再実行は旧エントリをその場で書き換えるので、
+    何度実行してもフックは1本のままである。リポジトリを移動したときも同じ。
+42. **`tray-stop` は失敗したときに終了コード1を返し、`tray.pid` を残す。**
+    7.5 を見よ。以前は必ず「停止しました」と報告していた。
 
 ---
 
@@ -1327,6 +1415,34 @@ Windows は PID を再利用するし、数週間動いているマシンでは�
 `/T` が要るのは、node がさらに `Get-Process` のために powershell を生やすことがあり
 （`src/sessions.js`）、半端に殺した木は孤児を残すからである。
 `/F` で殺した場合は `tray.pid` を消すのが誰も居なくなるので、`tray-stop` が代わりに消す。
+
+**生死の判定は `tray.pid` ではなくプロセステーブルで行う。** ここには
+「必ず成功したと報告する」バグがあった —— `tray.pid` を消してから `trayStatus()` を
+呼んでいたのだが、`trayStatus()` は**その `tray.pid` を読む**関数なので、
+答えは常に「何も居ない」だった。さらに `killTree` は `spawnSync` の `error`
+（taskkill 自体が起動できなかった場合。`spawnSync` は**例外を投げず** `error` と
+`status: null` を返す）でも `ran: true` を返していた。合成すると
+**トレイもサーバも生きたまま `tray.pid` だけ消え、到達不能になり、
+しかも「停止しました」と報告される**。
+
+したがって `stopTrayProcesses()`（`src/autostart.js`）は:
+
+- 各段階で `probeTrayProcesses()` を呼ぶ。これは `tray.pid` を読まず、
+  **識別情報を引数で受け取って** `Get-Process` に問い合わせる。
+  判定の根拠が「これから消すファイル」であってはならない。
+- `killTree` は `error` も**非0終了**も `ran: false`（理由付き）にする。
+  `taskkill` の終了コード0すら証拠にはしない —— 木が消えるより先に戻ることがある。
+- `tray.pid` を消すのは、**両方が実際に消えていることを確認した後だけ**。
+  生き残っているのに pid ファイルを消すのは、残しておくより悪い ——
+  ホストはポートを掴んだまま、それが何処に居るかの記録だけが消える。
+- 残っていれば残った PID を出して **終了コード1**。スクリプトから見て
+  行動できるのはこれだけである。
+
+`tray` / `tray-stop` / `uninstall-autostart` は `install-autostart` と同じ順序で
+**dry-run が先、プラットフォーム判定が後**にある。中身の確認は Windows 以外でもできて、
+実行だけが Windows を要求する。`cli.js tray` は `wscript.exe` の `spawnSync` の
+`error` と終了コードも見る（見ていなかった。起動に失敗しても `ok: true` を返していた）。
+
 
 **`cli.js tray` も wscript を経由する。** ここは驚きがあった場所である。
 トレイホストを node の子として直接起動すると生き残らない ——

@@ -19,7 +19,15 @@ import { buildToolLog } from './tools-log.js';
 import { readLiveSessions } from './sessions.js';
 import { HooksIngest, foldState, listEventDates, todayKey } from './hooks-ingest.js';
 import { latestRateLimits, readSidecars } from './statusline-sidecar.js';
-import { applySettings, hookCommand, statuslineCommand, settingsPath, PROJECT_ROOT, CorruptSettingsError } from './installer.js';
+import {
+  applySettings,
+  hookCommand,
+  statuslineCommand,
+  settingsPath,
+  PROJECT_ROOT,
+  CorruptSettingsError,
+  UnsafeCommandPathError,
+} from './installer.js';
 import { ccusageDaily, normalizeDailyRow } from './ccusage.js';
 import {
   loadOrCreateToken,
@@ -45,9 +53,10 @@ import {
   trayPidPath,
   trayStatus,
   signalTrayStop,
-  killTree,
+  stopTrayProcesses,
   launcherHealth,
   displayCommand,
+  decodeConsole,
   TASK_NAME,
 } from './autostart.js';
 import { parseFile, ParseStats } from './parser.js';
@@ -57,6 +66,7 @@ import {
   installCrashHandlers,
   openBrowser,
   resolvePort,
+  isPortNumber,
   DEFAULT_PORT,
 } from './server.js';
 
@@ -66,12 +76,12 @@ Usage: node src/cli.js <command> [options]
 
 Commands:
   sessions [--utc]               live sessions from ~/.claude/sessions + PID liveness
-  list [--days N]                session index from ~/.claude/projects (default 30 days)
+  list [--days N] [--utc]        session index from ~/.claude/projects (default 30 days)
   tree <sessionId|prefix> [--utc]  session -> subagent tree
   usage <sessionId|prefix>       token usage for one session (main + subagents)
   usage --daily [--since D] [--until D] [--compare-ccusage]
                                  daily usage across all transcripts
-  tools <sessionId|prefix> [--limit N] [--errors]
+  tools <sessionId|prefix> [--limit N] [--errors] [--utc]
   events [--date YYYY-MM-DD] [--limit N] [--state] [--utc]
   serve [--port N] [--open] [--persist-token] [--rotate-token]
         [--token-file P] [--log-file [P]] [--events-keep-days N]
@@ -85,7 +95,11 @@ Commands:
                                  keeps the old one until it is restarted
   statusline                     rate limits captured by the statusline sidecar
   stats <sessionId|prefix>       parser statistics for one session
-  install-hooks [--dry-run]      write hooks + statusLine into ~/.claude/settings.json
+  install-hooks [--dry-run] [--force-statusline]
+                                 write hooks + statusLine into ~/.claude/settings.json.
+                                 An existing statusLine that is not ours is left
+                                 alone unless --force-statusline, which saves it
+                                 so uninstall-hooks can put it back.
   uninstall-hooks [--dry-run]    remove them again
   install-autostart [--port N] [--no-tray] [--dry-run]
                                  start the dashboard hidden at Windows logon.
@@ -101,7 +115,10 @@ Commands:
   tray [--port N] [--no-wait] [--dry-run]
                                  start the tray host now, detached, without
                                  registering anything. Windows only.
-  tray-stop [--dry-run]          stop the tray host (and the server it supervises)
+  tray-stop [--port N] [--dry-run]
+                                 stop the tray host (and the server it supervises).
+                                 Windows only. --port only matters when tray.pid
+                                 does not name one. Exits 1 if anything survives.
   paths                          show every resolved path
 
 Global options:
@@ -109,24 +126,117 @@ Global options:
   -h, --help
 `;
 
-export function parseArgs(argv) {
-  const out = { _: [], flags: {} };
+/**
+ * Every flag the CLI accepts, and whether it takes a value.
+ *
+ * This table exists because the parser used to have no idea. It gave the next
+ * token to whatever flag came before it, so `install-hooks --dry-run foo` set
+ * `dry-run` to "foo", the `=== true` test for a dry run failed, and the command
+ * WROTE settings.json. A misspelled `--dry-runn` was accepted just as quietly
+ * and registered a scheduled task. And `usage --json <id>` put the session id
+ * into `--json`, leaving `usage` with no argument and printing the all-time
+ * daily aggregate instead.
+ *
+ * Three kinds:
+ *   bool     a switch. Never consumes the next token. `--flag=false` still
+ *            works; `--flag false` does not, because the whole bug above was a
+ *            switch swallowing the word after it.
+ *   value    needs one. `--days` with nothing usable after it is an error, not
+ *            a silent fall back to the default.
+ *   optional `--log-file` alone means "the default path", `--log-file X` means
+ *            X. The two token-bearing flags of `serve` and nothing else.
+ *
+ * A test asserts this table and the USAGE text name exactly the same flags, so
+ * neither can grow a flag the other has never heard of.
+ * @type {Record<string, 'bool'|'value'|'optional'>}
+ */
+export const FLAGS = {
+  // global
+  json: 'bool',
+  help: 'bool',
+  utc: 'bool',
+  // list
+  days: 'value',
+  // usage
+  daily: 'bool',
+  since: 'value',
+  until: 'value',
+  'compare-ccusage': 'bool',
+  // tools / events
+  limit: 'value',
+  errors: 'bool',
+  date: 'value',
+  state: 'bool',
+  // serve / rotate-token
+  port: 'value',
+  open: 'bool',
+  'persist-token': 'bool',
+  'rotate-token': 'bool',
+  'token-file': 'optional',
+  'log-file': 'optional',
+  'events-keep-days': 'value',
+  // install-hooks / uninstall-hooks
+  'dry-run': 'bool',
+  'force-statusline': 'bool',
+  // autostart / tray
+  'no-tray': 'bool',
+  'no-wait': 'bool',
+  'show-url': 'bool',
+};
+
+/** `--flag`, `--flag=x`: the flag names USAGE mentions. */
+export function flagsNamedIn(text) {
+  return new Set((String(text).match(/--[a-z][a-z0-9-]*/g) ?? []).map((f) => f.slice(2)));
+}
+
+/** The USAGE text, so the flag table can be checked against what we document. */
+export const usageText = () => USAGE;
+
+/**
+ * @param {string[]} argv
+ * @param {Record<string, 'bool'|'value'|'optional'>} [spec]
+ * @returns {{_: string[], flags: Record<string, any>, errors: string[]}}
+ */
+export function parseArgs(argv, spec = FLAGS) {
+  const out = { _: [], flags: {}, errors: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith('--')) {
+    if (a.startsWith('--') && a.length > 2) {
       const eq = a.indexOf('=');
-      if (eq > 0) {
-        out.flags[a.slice(2, eq)] = a.slice(eq + 1);
-      } else {
-        const key = a.slice(2);
-        const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith('--')) {
-          out.flags[key] = next;
-          i++;
-        } else {
-          out.flags[key] = true;
-        }
+      const key = eq > 0 ? a.slice(2, eq) : a.slice(2);
+      const kind = Object.prototype.hasOwnProperty.call(spec, key) ? spec[key] : null;
+      if (!kind) {
+        // Deliberately does NOT consume the next token: a typo must not also
+        // eat the session id that followed it.
+        out.errors.push(`unknown flag --${key}`);
+        continue;
       }
+      if (eq > 0) {
+        const raw = a.slice(eq + 1);
+        if (kind === 'bool' && !/^(true|false)$/i.test(raw)) {
+          out.errors.push(`--${key} is a switch and takes no value (got "${raw}"); write --${key} or --${key}=false`);
+          continue;
+        }
+        // A switch is stored as a real boolean, so the many places that read
+        // `args.flags.json` directly cannot be fooled by the STRING "false".
+        out.flags[key] = kind === 'bool' ? /^true$/i.test(raw) : raw;
+        continue;
+      }
+      if (kind === 'bool') {
+        out.flags[key] = true;
+        continue;
+      }
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        out.flags[key] = next;
+        i++;
+        continue;
+      }
+      if (kind === 'optional') {
+        out.flags[key] = true;
+        continue;
+      }
+      out.errors.push(`--${key} needs a value`);
     } else if (a === '-h') {
       out.flags.help = true;
     } else {
@@ -228,9 +338,32 @@ function resolveSession(idOrPrefix) {
   return session;
 }
 
-function fail(msg) {
+/**
+ * @param {string} msg
+ * @param {number} [code] 2 for "you typed it wrong", 1 for "it did not work"
+ */
+function fail(msg, code = 1) {
   process.stderr.write(`error: ${msg}\n`);
-  process.exit(1);
+  process.exit(code);
+}
+
+/**
+ * `--port`, as an actual port.
+ *
+ * Absent means "no choice was made" and the caller falls through to the
+ * environment and then the default. Anything else has to BE a port: resolvePort
+ * used to swallow a bad one, which is how `install-autostart --port 70000` came
+ * to register a logon task on 47321 without saying so.
+ * @param {{flags: Record<string, any>}} args
+ * @returns {number|undefined}
+ */
+export function portFlag(args) {
+  const v = args.flags.port;
+  if (v === undefined) return undefined;
+  if (!isPortNumber(v)) {
+    fail(`--port must be a whole number 0..65535 (got "${v === true ? '' : v}"); 0 lets the OS pick one`, 2);
+  }
+  return Number(String(v).trim());
 }
 
 /* ------------------------------- commands ------------------------------- */
@@ -798,7 +931,7 @@ function printWithToken(logging, text) {
 
 async function cmdServe(args) {
   const logging = openServeLog(args);
-  const port = resolvePort(args.flags.port);
+  const port = resolvePort(portFlag(args));
   const open = boolFlag(args, 'open');
   const rotate = boolFlag(args, 'rotate-token');
   // Rotating a per-process token would be meaningless, so it implies storing
@@ -919,10 +1052,11 @@ async function cmdServe(args) {
  * @returns {{port: number, source: string, guessed: boolean}}
  */
 function rotateTokenPort(args, tokenFile) {
-  // A bare `--port` with no number after it is not a port choice, so it falls
-  // through to the recorded one rather than claiming a source it does not have.
-  if (args.flags.port !== undefined && args.flags.port !== true) {
-    return { port: resolvePort(args.flags.port), source: '--port', guessed: false };
+  // A bare `--port` no longer reaches here at all (the parser refuses it), but
+  // the check stays: this function is also called with hand-built args.
+  const explicit = portFlag(args);
+  if (explicit !== undefined) {
+    return { port: explicit, source: '--port', guessed: false };
   }
   if (process.env.CLAUDE_MONITOR_PORT) {
     return { port: resolvePort(undefined), source: 'CLAUDE_MONITOR_PORT', guessed: false };
@@ -1103,6 +1237,13 @@ function cmdAutostart(args, mode) {
   }
 
   if (mode === 'uninstall') {
+    // installAutostart throws on a non-Windows host after its dry run; the
+    // removal has to say the same thing rather than run a schtasks that is not
+    // there and report its failure as "the task was not registered".
+    if (!dryRun && process.platform !== 'win32') {
+      fail(`uninstall-autostart is Windows-only (Task Scheduler); this is ${process.platform}`);
+      return;
+    }
     const res = uninstallAutostart({ dryRun });
     emit(args.flags.json, res, () => {
       // A dry run promising a removal for a launcher that is not there reads as
@@ -1136,7 +1277,7 @@ function cmdAutostart(args, mode) {
     return;
   }
 
-  const port = args.flags.port !== undefined ? resolvePort(args.flags.port) : resolvePort(undefined);
+  const port = resolvePort(portFlag(args));
   // The tray is the default; --no-tray puts the old direct wscript -> node
   // command back for anyone who wants one process fewer and no icon.
   const tray = !boolFlag(args, 'no-tray');
@@ -1279,7 +1420,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * see docs/autostart-verification.md.
  */
 function planTray(args) {
-  const port = resolvePort(args.flags.port);
+  const port = resolvePort(portFlag(args));
   const inner = {
     tray: true,
     trayScript: trayScriptPath(),
@@ -1355,12 +1496,24 @@ async function cmdTray(args) {
   // `uninstall-autostart` does not know about, would be litter.
   ensureDir(path.dirname(plan.launcher));
   fs.writeFileSync(plan.launcher, toUtf16LeBom(plan.vbs));
+  let spawned;
   try {
     // spawnSync: wscript exits as soon as it has fired the command off, so this
     // waits milliseconds, not for the tray host.
-    spawnSync(plan.file, plan.args, { windowsHide: true, shell: false });
+    spawned = spawnSync(plan.file, plan.args, { windowsHide: true, shell: false });
   } finally {
     try { fs.rmSync(plan.launcher, { force: true }); } catch { /* best effort */ }
+  }
+  // spawnSync does not throw when the host cannot be started; it hands back an
+  // `error` and a null status. Reporting ok:true on that told the user the tray
+  // was running when wscript had never launched.
+  if (spawned && spawned.error) {
+    fail(`could not start ${plan.file}: ${spawned.error.message ?? spawned.error}`);
+  }
+  if (!spawned || spawned.status !== 0) {
+    const why = decodeConsole(spawned?.stderr).trim() || decodeConsole(spawned?.stdout).trim();
+    fail(`${plan.display} exited ${spawned?.status ?? 'without a status'}${why ? `: ${why}` : ''}\n`
+      + `  nothing was started. The tray host log, if it got that far, is ${plan.logFile}`);
   }
 
   let ready = false;
@@ -1430,13 +1583,16 @@ async function cmdTray(args) {
  * `tray-stop` - stop the tray host, and with it the server it supervises.
  *
  * Asks first (a named event the host's poll timer checks, so its cleanup runs)
- * and only kills the tree if that is ignored. The pid file is removed here in
- * the kill case because a process stopped with /F never gets to remove its own.
+ * and only kills the tree if that is ignored. Whether anything actually stopped
+ * is decided by the PROCESS TABLE, not by the pid file: this command used to
+ * delete the file and then read it back, so it reported success no matter what
+ * survived. It now exits 1 with the surviving pids, and leaves the pid file
+ * where it is so a second run can still find them.
  */
 async function cmdTrayStop(args) {
   const dryRun = boolFlag(args, 'dry-run');
   const before = trayStatus();
-  const port = before.port ?? resolvePort(args.flags.port);
+  const port = before.port ?? resolvePort(portFlag(args));
 
   if (dryRun) {
     emit(args.flags.json, { ...before, dryRun: true, port, stopped: false }, () => [
@@ -1449,6 +1605,13 @@ async function cmdTrayStop(args) {
       'would ask the host to exit through its named stop event, wait for both',
       'PIDs to go, and only then fall back to `taskkill /PID <tray> /T /F`.',
     ].join('\n'));
+    return;
+  }
+
+  // Same order as `tray` and `install-autostart`: the dry run works anywhere,
+  // the real thing needs the OS whose stop event and taskkill it uses.
+  if (process.platform !== 'win32') {
+    fail(`tray-stop is Windows-only (a named Win32 event and taskkill); this is ${process.platform}`);
     return;
   }
 
@@ -1477,9 +1640,6 @@ async function cmdTrayStop(args) {
     return;
   }
 
-  const trayExpect = { name: before.trayName, startedAt: before.trayStartedAt };
-  const serverExpect = { name: before.serverName, startedAt: before.serverStartedAt };
-
   // A pid file naming a RECYCLED pid must not be acted on at all. Killing is
   // out of the question, and the stop event belongs to whoever holds the port
   // now, so leave it alone; the file is the only thing here that is ours.
@@ -1497,63 +1657,41 @@ async function cmdTrayStop(args) {
     return;
   }
 
-  const signalled = signalTrayStop(port);
-  let after = before;
-  const deadline = Date.now() + 10000;
-  while (Date.now() < deadline) {
-    after = trayStatus();
-    if (!after.trayAlive && !after.serverAlive) break;
-    await sleep(400);
-  }
-
-  let killed = false;
-  const refusals = [];
-  if (after.trayAlive || after.serverAlive) {
-    // Every kill re-checks the pid against the name and start time recorded in
-    // tray.pid, and does nothing if they no longer agree (autostart.killTree).
-    if (after.trayAlive) {
-      const r = killTree(before.trayPid, { expect: trayExpect });
-      if (r.ran) killed = true; else if (r.refused) refusals.push(`tray pid ${before.trayPid}: ${r.refused}`);
-    }
-    // The server is the tray's child, so /T should already have taken it - but
-    // "should" is not a check, and a stray node holding the port is the exact
-    // leftover this command exists to prevent.
-    await sleep(500);
-    const recheck = trayStatus();
-    if (recheck.serverAlive && before.serverPid) {
-      const r = killTree(before.serverPid, { expect: serverExpect });
-      if (r.ran) killed = true; else if (r.refused) refusals.push(`server pid ${before.serverPid}: ${r.refused}`);
-    }
-    // Nobody ran the host's finally block, so the pid file is ours to clear.
-    if (killed) {
-      try { fs.rmSync(before.file, { force: true }); } catch { /* best effort */ }
-    }
-    await sleep(500);
-    after = trayStatus();
-  }
+  // Signal, wait, kill, and re-read the process table - never the pid file,
+  // which this sequence is the thing that deletes. See stopTrayProcesses.
+  const res = await stopTrayProcesses(before, { port });
 
   emit(args.flags.json, {
-    ok: !after.trayAlive && !after.serverAlive,
+    ok: res.ok,
     dryRun: false,
     port,
-    signalled,
-    killed,
-    refusals,
-    stopped: !after.trayAlive && !after.serverAlive,
+    signalled: res.signalled,
+    killed: res.killed,
+    refusals: res.refusals,
+    stopped: res.ok,
     trayPid: before.trayPid,
     serverPid: before.serverPid,
-    trayAlive: after.trayAlive,
-    serverAlive: after.serverAlive,
+    trayAlive: res.trayAlive,
+    serverAlive: res.serverAlive,
     pidFile: before.file,
-    pidFileRemoved: !fs.existsSync(before.file),
+    pidFileRemoved: res.pidFileRemoved,
   }, () => [
-    `tray pid   : ${before.trayPid} ${after.trayAlive ? '(STILL ALIVE)' : '(gone)'}`,
-    `server pid : ${before.serverPid ?? '(unknown)'} ${after.serverAlive ? '(STILL ALIVE)' : '(gone)'}`,
-    `asked      : ${signalled ? 'yes (stop event was there)' : 'no (no tray host was listening for it)'}`,
-    `killed     : ${killed ? 'yes (taskkill /T /F - it did not go quietly)' : 'no'}`,
-    ...refusals.map((r) => `refused    : ${r}`),
-    `tray.pid   : ${fs.existsSync(before.file) ? `${before.file} (STILL PRESENT)` : 'removed'}`,
+    `tray pid   : ${before.trayPid} ${res.trayAlive ? '(STILL ALIVE)' : '(gone)'}`,
+    `server pid : ${before.serverPid ?? '(unknown)'} ${res.serverAlive ? '(STILL ALIVE)' : '(gone)'}`,
+    `asked      : ${res.signalled ? 'yes (stop event was there)' : 'no (no tray host was listening for it)'}`,
+    `killed     : ${res.killed ? 'yes (taskkill /T /F - it did not go quietly)' : 'no'}`,
+    ...res.refusals.map((r) => `refused    : ${r}`),
+    `tray.pid   : ${res.pidFileRemoved ? 'removed' : `${before.file} ${fs.existsSync(before.file) ? '(STILL PRESENT)' : '(gone)'}`}`,
+    ...(res.ok ? [] : [
+      '',
+      'NOT STOPPED. The pid file is deliberately left alone so a second run can',
+      'still find these processes; deleting it would hide a tray that is holding',
+      `the port. Try again, or stop them by hand: taskkill /PID <pid> /T /F`,
+    ]),
   ].join('\n'));
+
+  // The exit code is the only part of this a script can act on.
+  if (!res.ok) process.exitCode = 1;
 }
 
 function cmdStats(args) {
@@ -1584,15 +1722,18 @@ function cmdStats(args) {
 }
 
 function cmdInstall(args, mode) {
-  const dryRun = args.flags['dry-run'] === true || args.flags['dry-run'] === 'true';
+  const dryRun = boolFlag(args, 'dry-run');
+  const forceStatusLine = boolFlag(args, 'force-statusline');
   let res;
   try {
-    res = applySettings(mode, { dryRun });
+    res = applySettings(mode, { dryRun, forceStatusLine });
   } catch (err) {
-    if (err instanceof CorruptSettingsError) {
-      // Never silently rewrite a settings file we could not read.
+    if (err instanceof CorruptSettingsError || err instanceof UnsafeCommandPathError) {
+      // Never silently rewrite a settings file we could not read, and never
+      // write a command line that would not run what it reads like.
+      const error = err instanceof CorruptSettingsError ? 'corrupt-settings' : 'unsafe-command-path';
       if (args.flags.json) {
-        process.stdout.write(`${JSON.stringify({ ok: false, error: 'corrupt-settings', file: err.file, backupFile: err.backupFile, message: err.message }, null, 2)}\n`);
+        process.stdout.write(`${JSON.stringify({ ok: false, error, file: err.file ?? null, backupFile: err.backupFile ?? null, path: err.path ?? null, message: err.message }, null, 2)}\n`);
       } else {
         process.stderr.write(`error: ${err.message}\n`);
       }
@@ -1610,16 +1751,45 @@ function cmdInstall(args, mode) {
       lines.push(`statusLine  : ${statuslineCommand()} (${res.statusLine})`);
       lines.push(`indent      : ${res.indent === '\t' ? 'tab (kept from the existing file)' : `${res.indent} spaces`}`);
       lines.push(`events added: ${res.added.join(', ') || '(none)'}`);
+      lines.push(`events updated: ${res.replaced.join(', ') || '(none)'}`);
       lines.push(`already present: ${res.skipped.join(', ') || '(none)'}`);
+      if (res.replaced.length) {
+        lines.push(
+          '  (an entry naming our script but running a different node - an older',
+          '   install, or a node that has since been replaced - was rewritten in',
+          '   place rather than added a second time.)',
+        );
+      }
+      if (res.statusLine === 'kept-foreign') {
+        lines.push(
+          '',
+          `statusLine NOT registered: ${res.file} already has one, and it is not ours:`,
+          `  ${res.statusLineExisting}`,
+          '  The hooks above are unaffected - only rate limits and context% need the',
+          '  statusLine. Re-run with --force-statusline to take it over; the current',
+          '  value is saved and uninstall-hooks puts it back.',
+        );
+      } else if (res.statusLine === 'replaced') {
+        lines.push('', `the previous statusLine was saved and will be restored by uninstall-hooks:\n  ${res.statusLineExisting}`);
+      }
     } else {
       lines.push(`hooks removed from: ${res.removed.join(', ') || '(none)'}`);
-      lines.push(`statusLine: ${res.statusLine}`);
+      lines.push(`statusLine: ${res.statusLine}${res.statusLine === 'restored' ? ' (the one --force-statusline replaced is back)' : ''}`);
     }
     if (res.unchanged) lines.push('no change needed');
     if (res.backupFile) lines.push(`backup: ${res.backupFile}`);
     if (dryRun) lines.push('', '--- resulting settings.json ---', res.json.trimEnd());
     return lines.join('\n');
   });
+}
+
+/** Call something that may refuse, and report the refusal as the value. */
+function safely(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    return `(unavailable: ${err && err.message ? err.message.split('\n')[0] : err})`;
+  }
 }
 
 function cmdPaths(args) {
@@ -1632,8 +1802,11 @@ function cmdPaths(args) {
     eventsDir: path.join(monitorDir(), 'events'),
     statuslineDir: path.join(monitorDir(), 'statusline'),
     projectRoot: PROJECT_ROOT,
-    hookScript: hookCommand(),
-    statuslineScript: statuslineCommand(),
+    // `paths` is the command someone runs when something is wrong, so a path
+    // we would refuse to build a command out of has to be reportable rather
+    // than fatal here.
+    hookScript: safely(hookCommand),
+    statuslineScript: safely(statuslineCommand),
     tokenFile: tokenFilePath(),
     urlFile: urlFilePath(),
     serveLog: defaultLogFilePath(),
@@ -1653,6 +1826,14 @@ function cmdPaths(args) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // Before anything else, and before --help: a typo the parser could not place
+  // is the whole reason this check exists, and it must not be silently ignored
+  // by a command that happens to run anyway.
+  if (args.errors.length) {
+    for (const e of args.errors) process.stderr.write(`error: ${e}\n`);
+    process.stderr.write(`\n${USAGE}`);
+    process.exit(2);
+  }
   const cmd = args._[0];
   if (!cmd || args.flags.help) {
     process.stdout.write(USAGE);

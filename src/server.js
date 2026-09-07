@@ -78,13 +78,51 @@ const STATIC_FILES = new Map([
   ['/style.css', { file: 'style.css', type: 'text/css; charset=utf-8' }],
 ]);
 
-/** Resolve the configured port: explicit > env > default. */
+/**
+ * A number or a string of digits in range. 0 is deliberate: "let the OS pick
+ * one", which is how the tests bind.
+ *
+ * Only those two types: `Number(true)` is 1 and `Number([])` is 0, so a bare
+ * `--port` flag or a stray array would otherwise pass for a port.
+ */
+export function isPortNumber(v) {
+  if (typeof v === 'number') return Number.isInteger(v) && v >= 0 && v <= 65535;
+  if (typeof v !== 'string') return false;
+  const s = v.trim();
+  if (!/^\d+$/.test(s)) return false;
+  const n = Number(s);
+  return Number.isInteger(n) && n <= 65535;
+}
+
+/**
+ * Resolve the configured port: explicit > env > default.
+ *
+ * An explicit value that is NOT a port throws. It used to fall through to
+ * 47321, which turned `install-autostart --port 70000` into a logon task
+ * quietly registered on the default port, and `resolvePort(false)` - a bare
+ * flag - into port 0. Silently serving somewhere other than where the user
+ * said is worse than not starting.
+ *
+ * Only absent (undefined / null / empty) means "no choice was made". The
+ * environment variable stays lenient: it is ambient rather than something the
+ * user is typing right now, and a stray value in a shell profile must not stop
+ * a logon task from starting at all.
+ *
+ * @param {unknown} explicit
+ * @param {Record<string, any>} [env]
+ * @returns {number}
+ * @throws {RangeError} when `explicit` is given but is not a port
+ */
 export function resolvePort(explicit, env = process.env) {
-  const candidates = [explicit, env.CLAUDE_MONITOR_PORT];
-  for (const c of candidates) {
-    if (c === undefined || c === null || c === '' || c === true) continue;
-    const n = Number(c);
-    if (Number.isInteger(n) && n >= 0 && n <= 65535) return n;
+  if (explicit !== undefined && explicit !== null && explicit !== '') {
+    if (!isPortNumber(explicit)) {
+      throw new RangeError(`not a port number (want an integer 0..65535): ${JSON.stringify(explicit)}`);
+    }
+    return Number(explicit);
+  }
+  const fromEnv = env ? env.CLAUDE_MONITOR_PORT : undefined;
+  if (fromEnv !== undefined && fromEnv !== null && fromEnv !== '' && isPortNumber(fromEnv)) {
+    return Number(fromEnv);
   }
   return DEFAULT_PORT;
 }

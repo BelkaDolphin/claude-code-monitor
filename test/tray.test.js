@@ -34,6 +34,8 @@ import {
   trayStopEventName,
   trayStopArgs,
   killTree,
+  stopTrayProcesses,
+  probeTrayProcesses,
   launcherHealth,
   buildLauncherInfo,
   planAutostart,
@@ -853,7 +855,223 @@ describe('cli.js tray --dry-run', () => {
   test('the usage text documents both commands', () => {
     const out = execFileSync(process.execPath, [CLI, '--help'], { encoding: 'utf8', windowsHide: true });
     assert.match(out, /^\s+tray \[--port N\] \[--no-wait\] \[--dry-run\]/m);
-    assert.match(out, /^\s+tray-stop \[--dry-run\]/m);
+    // tray-stop accepts --port too (it is the fallback when tray.pid names no
+    // port), and the usage line now says so.
+    assert.match(out, /^\s+tray-stop \[--port N\] \[--dry-run\]/m);
     assert.match(out, /--no-tray/);
+  });
+});
+
+/**
+ * B-2. `tray-stop` used to remove tray.pid and THEN ask trayStatus() what was
+ * left - which reads tray.pid. The answer was therefore always "nothing", and
+ * the command reported success over a tray host that was still running and
+ * still holding the port, with the only record of its pids now deleted.
+ *
+ * killTree helped: spawnSync does not throw when taskkill cannot be started, it
+ * returns `{ error }` with a null status, and that was reported as `ran: true`.
+ *
+ * These drive the real kill path with a stubbed process runner - the one path
+ * in this file that had no test at all, because running it for real would kill
+ * the tray host on the machine running the suite.
+ */
+describe('tray-stop reports what actually survived (B-2)', () => {
+  const TRAY = 4321;
+  const SERVER = 8765;
+  const TRAY_START = '2026-09-04T13:52:28.0000000Z';
+  const SERVER_START = '2026-09-04T13:52:29.0000000Z';
+
+  /** A tray.pid on disk, exactly as the host writes it. */
+  function pidFile(label) {
+    const f = path.join(tmp.dir, `${label}.pid`);
+    fs.writeFileSync(f, JSON.stringify({
+      trayPid: TRAY, trayName: 'powershell', trayStartedAt: TRAY_START,
+      serverPid: SERVER, serverName: 'node', serverStartedAt: SERVER_START,
+      port: 47321, startedAt: TRAY_START, logFile: 'C:\\x\\serve.log',
+    }), 'utf8');
+    return f;
+  }
+
+  /**
+   * A stand-in for the process table and for taskkill.
+   *
+   * `alive` is the set of pids Get-Process reports; `onKill` decides what
+   * taskkill does and may change that set. Every call is recorded.
+   */
+  function fakeWorld({ alive = new Set([TRAY, SERVER]), signal = 'signalled', onKill } = {}) {
+    const calls = [];
+    const rowFor = (pid) => (pid === TRAY
+      ? `${TRAY}|powershell|${TRAY_START}`
+      : `${SERVER}|node|${SERVER_START}`);
+    const run = (file, args) => {
+      calls.push([file, ...args]);
+      if (file === 'taskkill') {
+        const pid = Number(args[args.indexOf('/PID') + 1]);
+        return onKill ? onKill(pid, alive) : (alive.delete(pid), { status: 0, stdout: '' });
+      }
+      const script = String(args[args.length - 1]);
+      if (script.includes('EventWaitHandle')) return { status: 0, stdout: signal };
+      return { status: 0, stdout: [...alive].map(rowFor).join('\r\n') };
+    };
+    return { run, calls, alive };
+  }
+
+  const noSleep = () => Promise.resolve();
+
+  test('killTree calls a taskkill that could not even be started a FAILURE', () => {
+    // spawnSync hands back `{ error }` and a null status rather than throwing.
+    const r = killTree(TRAY, {
+      expect: { name: 'powershell', startedAt: TRAY_START },
+      run: (file, args) => (file === 'taskkill'
+        ? { error: new Error('spawnSync taskkill ENOENT'), status: null }
+        : { status: 0, stdout: `${TRAY}|powershell|${TRAY_START}` }),
+    });
+    assert.equal(r.ran, false);
+    assert.match(r.refused, /taskkill could not be started/);
+  });
+
+  test('killTree calls a NON-ZERO taskkill a failure too', () => {
+    const r = killTree(TRAY, {
+      expect: { name: 'powershell', startedAt: TRAY_START },
+      run: (file) => (file === 'taskkill'
+        ? { status: 128, stdout: '', stderr: Buffer.from('ERROR: The process "4321" not found.') }
+        : { status: 0, stdout: `${TRAY}|powershell|${TRAY_START}` }),
+    });
+    assert.equal(r.ran, false);
+    assert.equal(r.code, 128);
+    assert.match(r.refused, /taskkill exited 128/);
+    assert.match(r.refused, /not found/, 'and says what taskkill said');
+  });
+
+  test('a taskkill that ran and worked is still a success', () => {
+    const r = killTree(TRAY, {
+      expect: { name: 'powershell', startedAt: TRAY_START },
+      run: (file) => (file === 'taskkill'
+        ? { status: 0, stdout: '' }
+        : { status: 0, stdout: `${TRAY}|powershell|${TRAY_START}` }),
+    });
+    assert.equal(r.ran, true);
+    assert.equal(r.code, 0);
+  });
+
+  test('(i) taskkill works, both die: ok, and the pid file goes', async () => {
+    const file = pidFile('stop-ok');
+    const world = fakeWorld();
+    const before = trayStatus({ file, run: world.run });
+    assert.equal(before.trayAlive, true);
+
+    const r = await stopTrayProcesses(before, { run: world.run, sleep: noSleep, waitMs: 0 });
+    assert.equal(r.ok, true);
+    assert.equal(r.killed, true);
+    assert.deepEqual(r.refusals, []);
+    assert.equal(r.trayAlive, false);
+    assert.equal(r.serverAlive, false);
+    assert.equal(r.pidFileRemoved, true);
+    assert.equal(fs.existsSync(file), false);
+    assert.ok(world.calls.some((c) => c[0] === 'taskkill' && c.includes(String(TRAY))));
+  });
+
+  test('(ii) taskkill cannot be started: NOT ok, and the pid file stays', async () => {
+    // The composite failure: nothing was killed, but the pid file was deleted
+    // anyway, so the surviving tray became unreachable AND unreported.
+    const file = pidFile('stop-spawn-fail');
+    const world = fakeWorld({
+      onKill: () => ({ error: new Error('spawnSync taskkill ENOENT'), status: null }),
+    });
+    const before = trayStatus({ file, run: world.run });
+
+    const r = await stopTrayProcesses(before, { run: world.run, sleep: noSleep, waitMs: 0 });
+    assert.equal(r.ok, false);
+    assert.equal(r.killed, false);
+    assert.equal(r.trayAlive, true, 'the tray is still there and we say so');
+    assert.equal(r.serverAlive, true);
+    assert.match(r.refusals.join('\n'), /taskkill could not be started/);
+    assert.equal(r.pidFileRemoved, false);
+    assert.equal(fs.existsSync(file), true, 'a second run can still find these pids');
+  });
+
+  test('(iii) taskkill exits 0 but the process is still there: NOT ok', async () => {
+    const file = pidFile('stop-liar');
+    // Exit code 0 is not evidence: taskkill returns before the tree is gone,
+    // and a process can refuse to die. Only the process table decides.
+    const world = fakeWorld({ onKill: () => ({ status: 0, stdout: '' }) });
+    const before = trayStatus({ file, run: world.run });
+
+    const r = await stopTrayProcesses(before, { run: world.run, sleep: noSleep, waitMs: 0 });
+    assert.equal(r.killed, true, 'taskkill did run');
+    assert.equal(r.ok, false, 'but nothing actually stopped');
+    assert.equal(r.trayAlive, true);
+    assert.equal(r.serverAlive, true);
+    assert.equal(r.pidFileRemoved, false);
+    assert.equal(fs.existsSync(file), true);
+  });
+
+  test('the server is killed separately when /T left it behind', async () => {
+    const file = pidFile('stop-orphan');
+    // A stray node holding the port is the exact leftover this command exists
+    // to prevent, so the server gets its own taskkill.
+    const world = fakeWorld({
+      onKill: (pid, alive) => {
+        if (pid === TRAY) alive.delete(TRAY);
+        else alive.delete(pid);
+        return { status: 0, stdout: '' };
+      },
+    });
+    const before = trayStatus({ file, run: world.run });
+
+    const r = await stopTrayProcesses(before, { run: world.run, sleep: noSleep, waitMs: 0 });
+    assert.equal(r.ok, true);
+    const killed = world.calls.filter((c) => c[0] === 'taskkill').map((c) => c[2]);
+    assert.deepEqual(killed, [String(TRAY), String(SERVER)]);
+  });
+
+  test('a host that goes quietly is never killed at all', async () => {
+    const file = pidFile('stop-graceful');
+    const world = fakeWorld({ alive: new Set() });
+    const before = trayStatus({ file, run: world.run });
+    assert.equal(before.trayAlive, false);
+
+    const r = await stopTrayProcesses(before, { run: world.run, sleep: noSleep, waitMs: 0 });
+    assert.equal(r.ok, true);
+    assert.equal(r.signalled, true, 'the stop event was there');
+    assert.equal(r.killed, false);
+    assert.equal(world.calls.filter((c) => c[0] === 'taskkill').length, 0);
+    assert.equal(r.pidFileRemoved, true, 'the leftover file is cleaned up');
+  });
+
+  test('a recycled pid is still refused, and taskkill never runs', async () => {
+    const file = pidFile('stop-recycled');
+    const world = fakeWorld();
+    // Somebody else holds 4321 now.
+    world.run = ((inner) => (f, args) => {
+      if (f === 'powershell.exe' && String(args[args.length - 1]).includes('Get-Process')) {
+        return { status: 0, stdout: `${TRAY}|chrome|${TRAY_START}` };
+      }
+      return inner(f, args);
+    })(world.run);
+    const before = trayStatus({ file, run: world.run });
+    assert.equal(before.trayAlive, false);
+    assert.match(before.trayReason, /reused by chrome/);
+
+    const r = await stopTrayProcesses(before, { run: world.run, sleep: noSleep, waitMs: 0 });
+    assert.equal(r.ok, true, 'nothing of ours is running');
+    assert.equal(world.calls.filter((c) => c[0] === 'taskkill').length, 0, 'and nobody was killed for it');
+  });
+
+  test('probeTrayProcesses answers without reading the pid file at all', () => {
+    // The property the whole fix rests on: the verdict must not come from the
+    // file the stop sequence is about to delete.
+    const world = fakeWorld();
+    const record = {
+      trayPid: TRAY, trayName: 'powershell', trayStartedAt: TRAY_START,
+      serverPid: SERVER, serverName: 'node', serverStartedAt: SERVER_START,
+    };
+    assert.deepEqual(probeTrayProcesses(record, { run: world.run }), {
+      trayAlive: true, serverAlive: true, trayReason: null, serverReason: null,
+    });
+    world.alive.clear();
+    const gone = probeTrayProcesses(record, { run: world.run });
+    assert.equal(gone.trayAlive, false);
+    assert.equal(gone.serverAlive, false);
   });
 });

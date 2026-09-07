@@ -658,12 +658,29 @@ describe('route parsing', () => {
 describe('port resolution', () => {
   test('explicit beats env beats default', () => {
     assert.equal(resolvePort(1234, {}), 1234);
+    assert.equal(resolvePort('1234', {}), 1234);
     assert.equal(resolvePort(undefined, { CLAUDE_MONITOR_PORT: '5555' }), 5555);
     assert.equal(resolvePort(undefined, {}), DEFAULT_PORT);
-    assert.equal(resolvePort(true, {}), DEFAULT_PORT);
-    assert.equal(resolvePort('abc', {}), DEFAULT_PORT);
-    assert.equal(resolvePort(0, {}), 0);
-    assert.equal(resolvePort(70000, {}), DEFAULT_PORT);
+    assert.equal(resolvePort(null, {}), DEFAULT_PORT);
+    assert.equal(resolvePort('', {}), DEFAULT_PORT);
+    assert.equal(resolvePort(0, {}), 0, '0 means "let the OS pick one"');
+  });
+
+  // These four used to fall through to 47321. That is how `install-autostart
+  // --port 70000` registered a logon task on the default port without saying
+  // so, and how a bare `--port` (parsed as `true`, and Number(true) === 1)
+  // could bind port 1. An explicit choice that is not a port is now refused.
+  test('an explicit value that is not a port is refused, not rounded off', () => {
+    for (const bad of [true, false, 'abc', 70000, -1, 1.5, '12 34', []]) {
+      assert.throws(() => resolvePort(bad, {}), RangeError, `resolvePort(${JSON.stringify(bad)})`);
+    }
+  });
+
+  test('a junk CLAUDE_MONITOR_PORT still falls back', () => {
+    // The env var is ambient rather than something the user is typing now, and
+    // a stray value in a shell profile must not stop a logon task starting.
+    assert.equal(resolvePort(undefined, { CLAUDE_MONITOR_PORT: 'abc' }), DEFAULT_PORT);
+    assert.equal(resolvePort(undefined, { CLAUDE_MONITOR_PORT: '70000' }), DEFAULT_PORT);
   });
 });
 

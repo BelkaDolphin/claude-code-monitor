@@ -198,10 +198,27 @@ node src/cli.js uninstall-hooks
 ```
 
 - 既存の hooks（例: `SessionEnd` の `session_end.ps1`）と `permissions` 等の
-  設定は保持される。同じコマンドが既にあれば追加しない（冪等）。
+  設定は保持される。冪等性は**スクリプトのパス**で判定するので、同じフックが
+  二重に登録されることはない。
 - 登録されるのは `SessionStart` / `SessionEnd` / `UserPromptSubmit` / `Stop` /
   `SubagentStart` / `SubagentStop` / `PreToolUse` / `PostToolUse` /
   `PostToolUseFailure` / `Notification` / `PreCompact` / `PostCompact`。
+- **コマンドには `node` の絶対パス（`process.execPath`）を埋める。**
+  素の `node` は起動元の PATH 次第で、GUI から起動した Claude Code は
+  バージョンマネージャ（nvm / fnm / volta）が PATH を通すシェルプロファイルを
+  継承しない。**hooks だけが黙って死ぬ**のはこれが原因になる。
+  したがって **node を入れ替えたら `install-hooks` を再実行すること**。
+  再実行は旧エントリを**その場で書き換える**（追加はしない）。
+  リポジトリを移動したときも同じ。
+- 既に `statusLine` が設定されていて、それが**我々のものでない**場合は
+  **触らない**。hooks だけ登録し、「既存の statusLine があるため未登録」と出す。
+  奪ってよければ `install-hooks --force-statusline` —— 元の値は
+  `settings.json` の `_claudeMonitorStatusLineBackup` に退避され、
+  `uninstall-hooks` が復元する。
+- リポジトリや node のパスに `"` / 改行 / NUL（Windows では `%`、POSIX では
+  `$` `` ` `` `\` `!`）が含まれる場合は**登録を拒否する**。hooks の
+  `type: "command"` はシェル経由で起動されるので、そのままでは
+  「書いてあるとおりのもの」が走らない。`--dry-run` でも同じ判断を出す。
 - 反映は**新しいセッションから**。
 - hooks は `~/.claude-monitor/events/<YYYY-MM-DD>.jsonl` に1イベント1行を追記する。
   実測で**約7MB/日**貯まるので、サーバが**既定30日で古い日のファイルを削除する**
@@ -370,7 +387,7 @@ node src/cli.js <command> [options]
 |---|---|
 | `sessions [--utc]` | 稼働セッション一覧（`~/.claude/sessions` + PID生存 + hook由来の状態）。`START` / `END` 列は開始・終了時刻でローカル表示（`--utc` でUTC表示）。`--json` は各値の出どころを `times` に付ける |
 | `list [--days N] [--utc]` | セッション索引。既定は直近30日（ファイルmtime基準）。更新日時はローカル（`--utc` でUTC表示） |
-| `tree <sessionId\|prefix>` | セッション→サブエージェントのツリー |
+| `tree <sessionId\|prefix> [--utc]` | セッション→サブエージェントのツリー。時刻はローカル（`--utc` でUTC表示） |
 | `usage <sessionId\|prefix>` | 1セッションのトークン使用量（エージェント別・モデル別） |
 | `usage --daily [--since D] [--until D] [--compare-ccusage]` | 日付別集計と ccusage との突合 |
 | `tools <sessionId\|prefix> [--limit N] [--errors] [--utc]` | ツール実行ログ。時刻はローカル（`--utc` でUTC表示） |
@@ -379,11 +396,11 @@ node src/cli.js <command> [options]
 | `rotate-token [--token-file P] [--port N]` | 保存済みトークンを作り直して `url.txt` を書き直す。**再起動するまで**は古いURL・Cookie の方が通り、新しいURLが403（再起動後に逆転）。ポートは `--port` > `CLAUDE_MONITOR_PORT` > `url.txt` の記録（token ファイルが在るときだけ）> 既定 の順で、既定に落ちたときだけ警告する |
 | `statusline` | statusline sidecar が捉えた rate_limits 等 |
 | `stats <sessionId\|prefix>` | パーサ統計（type別件数・未知type・parse失敗） |
-| `install-hooks [--dry-run]` / `uninstall-hooks [--dry-run]` | 設定の登録・解除 |
+| `install-hooks [--dry-run] [--force-statusline]` / `uninstall-hooks [--dry-run]` | 設定の登録・解除。既存の `statusLine` が他人のものなら hooks だけ登録して触らない（`--force-statusline` で退避のうえ置換、`uninstall-hooks` が復元） |
 | `install-autostart [--port N] [--no-tray] [--dry-run]` / `uninstall-autostart [--dry-run]` | ログオン時に隠しウィンドウで起動するタスク（`claude-monitor`）の登録・解除。既定でトレイホスト経由（アイコン＋監視付き）、`--no-tray` で従来どおり node を直接起動。Windows 専用 |
 | `autostart-status [--show-url]` | 自動起動タスク・launcher・ログ・`url.txt`・**トレイ**の状態と、**launcher が指すパスがまだ実在するか**（読み取り専用）。起動URLは既定で `?t=<redacted>` に伏せる（貼り付けても資格情報が漏れないように）。`--show-url` で全文表示 |
 | `tray [--port N] [--no-wait] [--dry-run]` | ログオンタスクと同じトレイホストを、何も登録せずに今すぐ起動する。`tray.pid` にPIDを書く。Windows 専用 |
-| `tray-stop [--dry-run]` | トレイホスト（とそれが見ているサーバ）を停止する。まず行儀よく頼み、駄目なら `taskkill /T /F` |
+| `tray-stop [--port N] [--dry-run]` | トレイホスト（とそれが見ているサーバ）を停止する。まず行儀よく頼み、駄目なら `taskkill /T /F`。生死は **プロセステーブル** で判定し、両方消えたときだけ `tray.pid` を消す。残っていれば残ったPIDを出して **終了コード1**（`--port` は `tray.pid` にポートが無いときの予備）。Windows 専用 |
 | `paths` | 解決済みパス一覧 |
 
 `<sessionId>` は先頭一致のprefixでよい（例: `ea1b82f5`）。曖昧な場合は候補を表示する。

@@ -3,6 +3,10 @@
  *   #1 corrupt settings.json must not be mistaken for a missing one
  *   #2 the write must be atomic
  *   #5 the existing file's indentation must be preserved
+ *
+ * ...plus the pre-release batch:
+ *   B-3 the command we install is quoted, checked, and names THIS node
+ *   B-4 a statusLine that is not ours is not taken over without being asked
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -11,9 +15,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   applySettings,
+  planInstall,
+  planUninstall,
   readSettingsFile,
   detectIndent,
+  hookCommand,
+  statuslineCommand,
+  hookScriptPath,
+  statuslineScriptPath,
+  assertCommandSafePath,
+  ownsCommand,
+  nodePath,
   CorruptSettingsError,
+  UnsafeCommandPathError,
+  STATUSLINE_BACKUP_KEY,
 } from '../src/installer.js';
 import { makeTmpDir } from './helpers.js';
 
@@ -249,5 +264,228 @@ describe('existing indentation is preserved (review #5)', () => {
     const second = applySettings('install', { settingsFile: file });
     assert.equal(second.unchanged, true, 'a 4-space file is not rewritten just because of its indent');
     assert.equal(second.backupFile, null, 'and therefore no extra backup piles up');
+  });
+});
+
+/**
+ * B-3. The hook command is a shell command line, and we build it out of two
+ * paths we do not control the shape of.
+ */
+describe('the hook command names THIS node, quoted and checked (B-3)', () => {
+  const ROOT = 'D:\\develop\\Claude監視';
+
+  test('it is the absolute node, not a bare `node` off the PATH', () => {
+    // A bare `node` resolves out of whatever PATH the hook happens to inherit.
+    // Claude Code started from the GUI does not inherit the shell profile a
+    // version manager puts node on the PATH from, so the hooks - and only the
+    // hooks - would die silently on a machine where everything else works.
+    const cmd = hookCommand(ROOT);
+    assert.equal(cmd.startsWith(`"${process.execPath}" `), true, cmd);
+    assert.equal(cmd.includes(hookScriptPath(ROOT)), true, cmd);
+    assert.equal(/^node\s/.test(cmd), false, 'never a bare `node`');
+    assert.equal(nodePath(), process.execPath);
+  });
+
+  test('both halves are quoted, so a space in either is survivable', () => {
+    // The path this project is actually installed under is the Japanese one;
+    // the one node ships under is C:\Program Files\nodejs\node.exe.
+    const cmd = hookCommand(ROOT, 'C:\\Program Files\\nodejs\\node.exe');
+    assert.equal(cmd, `"C:\\Program Files\\nodejs\\node.exe" "${hookScriptPath(ROOT)}"`);
+    assert.equal((cmd.match(/"/g) ?? []).length, 4, 'exactly two quoted arguments');
+  });
+
+  test('statuslineCommand follows the same rule', () => {
+    const cmd = statuslineCommand(ROOT, 'C:\\Program Files\\nodejs\\node.exe');
+    assert.equal(cmd, `"C:\\Program Files\\nodejs\\node.exe" "${statuslineScriptPath(ROOT)}"`);
+  });
+
+  test('a path that would break out of the command line is refused', () => {
+    // The same rule autostart.assertQuotablePath applies to the .vbs launcher
+    // and to schtasks /TR, one layer further out: hooks are `type: "command"`
+    // and Claude Code hands the string to a shell.
+    for (const bad of ['C:\\a"b\\x.js', 'C:\\a\r\nb\\x.js', 'C:\\a\0b\\x.js']) {
+      assert.throws(() => assertCommandSafePath(bad, 'test path'), UnsafeCommandPathError, bad);
+    }
+  });
+
+  test('the shell metacharacters checked are the ones THIS shell expands', () => {
+    // A backslash is the separator every Windows path is made of and rejecting
+    // it would reject them all; on POSIX it is an escape inside double quotes.
+    // `%` is expanded by cmd.exe inside quotes and is inert to sh. So the set
+    // is platform-dependent on purpose, and the plain path passes either way.
+    const plain = process.platform === 'win32' ? 'D:\\develop\\Claude監視\\hooks\\x.js' : '/home/a b/x.js';
+    assert.equal(assertCommandSafePath(plain), plain);
+    const hostile = process.platform === 'win32' ? 'C:\\a%USERPROFILE%\\x.js' : '/home/$(id)/x.js';
+    assert.throws(() => assertCommandSafePath(hostile), UnsafeCommandPathError, hostile);
+  });
+
+  test('applySettings refuses before it takes a backup or writes a byte', () => {
+    const tmp2 = makeTmpDir('installer-unsafe');
+    try {
+      const file = path.join(tmp2.dir, 'settings.json');
+      fs.writeFileSync(file, JSON.stringify(existingSettings(), null, 2), 'utf8');
+      const before = fs.readFileSync(file, 'utf8');
+      const badRoot = process.platform === 'win32' ? 'C:\\a"b' : '/home/a$b';
+      assert.throws(
+        () => applySettings('install', { settingsFile: file, root: badRoot }),
+        UnsafeCommandPathError,
+      );
+      assert.equal(fs.readFileSync(file, 'utf8'), before);
+      assert.deepEqual(fs.readdirSync(tmp2.dir), ['settings.json'], 'no backup was taken');
+      // A dry run refuses identically - the refusal is about the path, not the
+      // write, so seeing it only on the real run would be useless.
+      assert.throws(
+        () => applySettings('install', { settingsFile: file, root: badRoot, dryRun: true }),
+        UnsafeCommandPathError,
+      );
+    } finally {
+      tmp2.cleanup();
+    }
+  });
+});
+
+describe('an entry written by an older build is replaced, not duplicated (B-3)', () => {
+  /** Settings as a user who installed before this change actually has them. */
+  function legacyInstalled(root) {
+    return {
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: `node "${hookScriptPath(root)}"`, async: true }] }],
+        SessionEnd: [{ hooks: [{ type: 'command', command: `node "${hookScriptPath(root)}"`, timeout: 5 }] }],
+      },
+      statusLine: { type: 'command', command: `node "${statuslineScriptPath(root)}"` },
+    };
+  }
+
+  test('ownsCommand recognises every generation by the script path', () => {
+    const script = hookScriptPath('D:\\repo');
+    assert.equal(ownsCommand(`node "${script}"`, script), true, 'the old bare-node form');
+    assert.equal(ownsCommand(`"C:\\other\\node.exe" "${script}"`, script), true, 'another node');
+    assert.equal(ownsCommand(hookCommand('D:\\repo'), script), true, 'the current form');
+    assert.equal(ownsCommand('powershell -File other.ps1', script), false);
+    assert.equal(ownsCommand(undefined, script), false);
+  });
+
+  test('re-running install rewrites the old entry in place', () => {
+    const root = 'D:\\repo';
+    const events = ['SessionStart', 'SessionEnd'];
+    const { next, added, replaced, skipped } = planInstall(legacyInstalled(root), { root, events });
+    assert.deepEqual(added, [], 'nothing new was appended');
+    assert.deepEqual(replaced.sort(), ['SessionEnd', 'SessionStart']);
+    assert.deepEqual(skipped, []);
+    for (const ev of events) {
+      const hooks = next.hooks[ev].flatMap((e) => e.hooks);
+      assert.equal(hooks.length, 1, `${ev} must not end up with two of our hooks`);
+      assert.equal(hooks[0].command, hookCommand(root));
+    }
+    // The rest of the entry survives: async/timeout are how SessionEnd stays
+    // inside its 1.5s budget, and they were not ours to reset.
+    assert.equal(next.hooks.SessionStart[0].hooks[0].async, true);
+    assert.equal(next.hooks.SessionEnd[0].hooks[0].timeout, 5);
+  });
+
+  test('the statusLine an older build wrote is ours to update without asking', () => {
+    const root = 'D:\\repo';
+    const { next, statusLine } = planInstall(legacyInstalled(root), { root, events: [] });
+    assert.equal(statusLine, 'updated');
+    assert.equal(next.statusLine.command, statuslineCommand(root));
+    assert.equal(next[STATUSLINE_BACKUP_KEY], undefined, 'ours is not worth backing up');
+  });
+
+  test('a second run after that changes nothing at all', () => {
+    const root = 'D:\\repo';
+    const events = ['SessionStart', 'SessionEnd'];
+    const once = planInstall(legacyInstalled(root), { root, events }).next;
+    const twice = planInstall(once, { root, events });
+    assert.deepEqual(twice.added, []);
+    assert.deepEqual(twice.replaced, []);
+    assert.deepEqual(twice.skipped.sort(), ['SessionEnd', 'SessionStart']);
+    assert.equal(JSON.stringify(twice.next), JSON.stringify(once));
+  });
+
+  test('uninstall removes the old form too', () => {
+    const root = 'D:\\repo';
+    const { next, removed, statusLine } = planUninstall(legacyInstalled(root), { root });
+    assert.deepEqual(removed.sort(), ['SessionEnd', 'SessionStart']);
+    assert.equal(next.hooks, undefined);
+    assert.equal(statusLine, 'removed');
+    assert.equal(next.statusLine, undefined);
+  });
+});
+
+/**
+ * B-4. There is exactly one statusLine, and a user may already be using it.
+ */
+describe('a foreign statusLine is not taken over silently (B-4)', () => {
+  const root = 'D:\\repo';
+  const FOREIGN = { type: 'command', command: 'powershell -File C:\\Users\\alice\\my-statusline.ps1' };
+  const withForeign = () => ({ ...existingSettings(), statusLine: { ...FOREIGN } });
+
+  test('without --force-statusline it is left exactly as it was', () => {
+    const { next, statusLine, statusLineExisting, added } = planInstall(withForeign(), { root });
+    assert.equal(statusLine, 'kept-foreign');
+    assert.deepEqual(next.statusLine, FOREIGN, 'untouched');
+    assert.equal(statusLineExisting, FOREIGN.command, 'and reported, so the user can decide');
+    assert.equal(next[STATUSLINE_BACKUP_KEY], undefined, 'nothing to back up');
+    assert.ok(added.length > 0, 'the hooks are still installed - they are a list, not a slot');
+  });
+
+  test('with --force-statusline the old value is parked, not lost', () => {
+    const { next, statusLine } = planInstall(withForeign(), { root, forceStatusLine: true });
+    assert.equal(statusLine, 'replaced');
+    assert.equal(next.statusLine.command, statuslineCommand(root));
+    assert.deepEqual(next[STATUSLINE_BACKUP_KEY], FOREIGN);
+  });
+
+  test('uninstall puts the parked value back', () => {
+    const forced = planInstall(withForeign(), { root, forceStatusLine: true }).next;
+    const { next, statusLine } = planUninstall(forced, { root });
+    assert.equal(statusLine, 'restored');
+    assert.deepEqual(next.statusLine, FOREIGN);
+    assert.equal(Object.prototype.hasOwnProperty.call(next, STATUSLINE_BACKUP_KEY), false,
+      'and the parking slot is cleaned up');
+    assert.deepEqual(next, withForeign(), 'a full round trip');
+  });
+
+  test('with no backup recorded, uninstall still just removes ours', () => {
+    const installed = planInstall(existingSettings(), { root }).next;
+    const { next, statusLine } = planUninstall(installed, { root });
+    assert.equal(statusLine, 'removed');
+    assert.equal(next.statusLine, undefined);
+  });
+
+  test('a backup sitting next to a statusLine that is NOT ours is left alone', () => {
+    // Nothing here is ours to act on, so nothing here is ours to delete.
+    const s = { ...withForeign(), [STATUSLINE_BACKUP_KEY]: { type: 'command', command: 'older' } };
+    const { next, statusLine } = planUninstall(s, { root });
+    assert.equal(statusLine, 'unchanged');
+    assert.deepEqual(next[STATUSLINE_BACKUP_KEY], { type: 'command', command: 'older' });
+  });
+
+  test('the dry run reaches the same verdict as the write would', () => {
+    const tmp2 = makeTmpDir('installer-statusline');
+    try {
+      const file = path.join(tmp2.dir, 'settings.json');
+      fs.writeFileSync(file, `${JSON.stringify(withForeign(), null, 2)}\n`, 'utf8');
+      const dry = applySettings('install', { settingsFile: file, dryRun: true });
+      assert.equal(dry.statusLine, 'kept-foreign');
+      assert.equal(JSON.parse(dry.json).statusLine.command, FOREIGN.command);
+
+      const real = applySettings('install', { settingsFile: file });
+      assert.equal(real.statusLine, 'kept-foreign');
+      assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).statusLine, FOREIGN);
+
+      // ...and the forced run, on the same file, does replace it and can be
+      // undone.
+      const forced = applySettings('install', { settingsFile: file, forceStatusLine: true });
+      assert.equal(forced.statusLine, 'replaced');
+      const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+      assert.equal(after.statusLine.command, statuslineCommand());
+      assert.deepEqual(after[STATUSLINE_BACKUP_KEY], FOREIGN);
+
+      applySettings('uninstall', { settingsFile: file });
+      assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).statusLine, FOREIGN);
+    } finally {
+      tmp2.cleanup();
+    }
   });
 });

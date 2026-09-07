@@ -877,22 +877,15 @@ export function trayStatus(opts = {}) {
   if (!info) {
     return { file, exists, ...emptyTray(), stale: exists };
   }
-  const seen = probeProcesses([info.trayPid, info.serverPid], opts);
-  const tray = pidMatches(seen.get(info.trayPid), { name: info.trayName, startedAt: info.trayStartedAt });
-  const server = info.serverPid === null
-    ? { ok: false, reason: 'no server recorded' }
-    : pidMatches(seen.get(info.serverPid), { name: info.serverName, startedAt: info.serverStartedAt });
+  const live = probeTrayProcesses(info, opts);
   return {
     file,
     exists,
     ...info,
-    trayAlive: tray.ok,
-    serverAlive: server.ok,
-    trayReason: tray.reason,
-    serverReason: server.reason,
+    ...live,
     // A pid file naming a process that is gone - or one that has since been
     // handed to somebody else - is what a /F kill leaves behind.
-    stale: !tray.ok,
+    stale: !live.trayAlive,
   };
 }
 
@@ -966,11 +959,127 @@ export function killTree(pid, opts = {}) {
   }
   const runner = typeof opts.run === 'function' ? opts.run : defaultRunner;
   try {
-    const r = runner('taskkill', ['/PID', String(pid), '/T', '/F']);
-    return { ran: true, code: typeof r.status === 'number' ? r.status : -1 };
+    const r = runner('taskkill', ['/PID', String(pid), '/T', '/F']) ?? {};
+    // spawnSync does NOT throw when the executable cannot be started - it
+    // returns `{ error }` with a null status. Reporting that as "ran" is how
+    // tray-stop came to say "stopped" about a process that was never signalled.
+    if (r.error) {
+      return { ran: false, code: null, refused: `taskkill could not be started: ${r.error.message ?? r.error}` };
+    }
+    const code = typeof r.status === 'number' ? r.status : null;
+    if (code !== 0) {
+      const why = toText(r.stderr).trim() || toText(r.stdout).trim();
+      return {
+        ran: false,
+        code,
+        refused: `taskkill exited ${code === null ? 'without a status' : code}${why ? `: ${why}` : ''}`,
+      };
+    }
+    return { ran: true, code };
   } catch (err) {
-    return { ran: false, code: -1, error: String(err && err.message ? err.message : err) };
+    return { ran: false, code: null, refused: `taskkill threw: ${err && err.message ? err.message : err}` };
   }
+}
+
+/**
+ * Are the two processes tray.pid named STILL the ones it meant?
+ *
+ * trayStatus() answers the same question by reading the file - which is exactly
+ * what the stop sequence is about to delete, and what made the old `tray-stop`
+ * report success unconditionally: it removed the file and then asked the file.
+ * This asks the process table and takes the identities as arguments, so the
+ * answer does not depend on a file that may already be gone.
+ *
+ * @param {{trayPid: number|null, trayName: string|null, trayStartedAt: string|null,
+ *          serverPid: number|null, serverName: string|null, serverStartedAt: string|null}} record
+ * @param {{run?: Function}} [opts]
+ * @returns {{trayAlive: boolean, serverAlive: boolean, trayReason: string|null, serverReason: string|null}}
+ */
+export function probeTrayProcesses(record, opts = {}) {
+  const seen = probeProcesses([record.trayPid, record.serverPid], opts);
+  const tray = record.trayPid === null
+    ? { ok: false, reason: 'no tray recorded' }
+    : pidMatches(seen.get(record.trayPid), { name: record.trayName, startedAt: record.trayStartedAt });
+  const server = record.serverPid === null
+    ? { ok: false, reason: 'no server recorded' }
+    : pidMatches(seen.get(record.serverPid), { name: record.serverName, startedAt: record.serverStartedAt });
+  return {
+    trayAlive: tray.ok,
+    serverAlive: server.ok,
+    trayReason: tray.reason,
+    serverReason: server.reason,
+  };
+}
+
+const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Stop the tray host and the server it supervises, and report WHAT IS LEFT.
+ *
+ * Ask first - a named event the host's poll timer checks, so its own cleanup
+ * runs - and only kill the tree if that is ignored. Every step re-reads the
+ * process table rather than the pid file, and the file is removed at the end
+ * ONLY once both processes are actually gone. A pid file deleted over a tray
+ * that is still running is worse than one left behind: the host keeps the port
+ * and there is no longer anything on disk that says where it is.
+ *
+ * @param {ReturnType<typeof trayStatus>} record what tray.pid said before we started
+ * @param {{port?: number, run?: Function, sleep?: Function, waitMs?: number, settleMs?: number}} [opts]
+ * @returns {Promise<{ok: boolean, signalled: boolean, killed: boolean, refusals: string[],
+ *                    trayAlive: boolean, serverAlive: boolean, pidFileRemoved: boolean}>}
+ */
+export async function stopTrayProcesses(record, opts = {}) {
+  const sleep = typeof opts.sleep === 'function' ? opts.sleep : defaultSleep;
+  const waitMs = Number.isFinite(opts.waitMs) ? opts.waitMs : 10000;
+  const settleMs = Number.isFinite(opts.settleMs) ? opts.settleMs : 500;
+  const port = opts.port ?? record.port;
+  const probe = () => probeTrayProcesses(record, opts);
+
+  const signalled = signalTrayStop(port, opts);
+
+  let alive = probe();
+  const deadline = Date.now() + waitMs;
+  while ((alive.trayAlive || alive.serverAlive) && Date.now() < deadline) {
+    await sleep(400);
+    alive = probe();
+  }
+
+  let killed = false;
+  /** @type {string[]} */
+  const refusals = [];
+  if (alive.trayAlive || alive.serverAlive) {
+    if (alive.trayAlive) {
+      const r = killTree(record.trayPid, {
+        ...opts, expect: { name: record.trayName, startedAt: record.trayStartedAt },
+      });
+      if (r.ran) killed = true; else refusals.push(`tray pid ${record.trayPid}: ${r.refused}`);
+    }
+    // The server is the tray's child, so /T should already have taken it - but
+    // "should" is not a check, and a stray node holding the port is the exact
+    // leftover this command exists to prevent.
+    await sleep(settleMs);
+    if (probe().serverAlive && record.serverPid) {
+      const r = killTree(record.serverPid, {
+        ...opts, expect: { name: record.serverName, startedAt: record.serverStartedAt },
+      });
+      if (r.ran) killed = true; else refusals.push(`server pid ${record.serverPid}: ${r.refused}`);
+    }
+    await sleep(settleMs);
+    alive = probe();
+  }
+
+  const ok = !alive.trayAlive && !alive.serverAlive;
+  // Nobody ran a /F-killed host's finally block, so the file is ours to clear -
+  // but only now that the process table agrees it names nothing.
+  let pidFileRemoved = false;
+  if (ok && record.file && fileSafe(record.file)) {
+    try {
+      fs.rmSync(record.file, { force: true });
+      pidFileRemoved = true;
+    } catch { /* best effort; the caller reports the file that is still there */ }
+  }
+
+  return { ok, signalled, killed, refusals, ...alive, pidFileRemoved };
 }
 
 function emptyTray() {

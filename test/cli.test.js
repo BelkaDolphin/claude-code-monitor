@@ -22,7 +22,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { makeTmpDir } from './helpers.js';
-import { parseArgs, boolFlag, pathFlag, countFlag } from '../src/cli.js';
+import { parseArgs, boolFlag, pathFlag, countFlag, FLAGS, flagsNamedIn, usageText } from '../src/cli.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'src', 'cli.js');
@@ -351,13 +351,20 @@ describe('the flags that decide whether there is a log at all', () => {
     assert.equal(pathFlag(parseArgs(['serve']), 'log-file', fallback), null);
   });
 
-  test('boolFlag accepts the bare, the =true and the spaced forms only', () => {
+  test('boolFlag accepts the bare and the =true/=false forms', () => {
+    // The SPACED form is deliberately gone. A switch that swallowed the token
+    // after it is what turned `install-hooks --dry-run foo` into a real write:
+    // `dry-run` became "foo", the `=== true` test failed, and settings.json was
+    // rewritten. Switches no longer consume anything, so `--open false` is
+    // `--open` plus a positional argument. `--open=false` still says false.
     assert.equal(boolFlag(parseArgs(['serve', '--open']), 'open'), true);
     assert.equal(boolFlag(parseArgs(['serve', '--open=true']), 'open'), true);
-    assert.equal(boolFlag(parseArgs(['serve', '--open', 'true']), 'open'), true);
     assert.equal(boolFlag(parseArgs(['serve', '--open=false']), 'open'), false);
-    assert.equal(boolFlag(parseArgs(['serve', '--open', 'false']), 'open'), false);
     assert.equal(boolFlag(parseArgs(['serve']), 'open'), false);
+
+    const spaced = parseArgs(['serve', '--open', 'false']);
+    assert.equal(boolFlag(spaced, 'open'), true, 'the switch is set');
+    assert.deepEqual(spaced._, ['serve', 'false'], 'and the word after it is untouched');
   });
 
   test('countFlag takes only non-negative whole numbers, and 0 is a real answer', () => {
@@ -428,5 +435,149 @@ describe('sessions: the START and END columns', () => {
     assert.equal(json.times[0].endedAt, null, 'no SessionEnd hook was ever seen');
     assert.equal(json.times[0].endedAtSource, null);
     assert.equal(json.times[0].durationMs, null);
+  });
+});
+
+/**
+ * The argument parser used to hand the token after a flag to whatever flag came
+ * before it, with no idea which flags take a value and no opinion at all about
+ * a flag it had never heard of. Three consequences, all reproduced below.
+ */
+describe('flags: a switch does not eat the word after it', () => {
+  /** A temp ~/.claude with a settings.json we can watch for writes. */
+  function claudeDirWith(label, settings) {
+    const dir = path.join(tmp.dir, label);
+    const claude = path.join(dir, 'claude');
+    const monitor = path.join(dir, 'monitor');
+    fs.mkdirSync(claude, { recursive: true });
+    fs.mkdirSync(monitor, { recursive: true });
+    const file = path.join(claude, 'settings.json');
+    if (settings !== undefined) fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+    return { claude, monitor, file };
+  }
+
+  /** Run the CLI and hand back everything, exit code included. */
+  function run(argv, env) {
+    return spawnSync(process.execPath, [CLI, ...argv], {
+      env, encoding: 'utf8', windowsHide: true,
+    });
+  }
+
+  test('install-hooks --dry-run foo stays a dry run and writes NOTHING', () => {
+    // The finding: `dry-run` became the string "foo", the `=== true` test for a
+    // dry run failed, and install-hooks WROTE ~/.claude/settings.json. On the
+    // reviewer's own machine, against their real settings.
+    const { claude, monitor, file } = claudeDirWith('dryrun-foo', { permissions: { allow: [] } });
+    const before = fs.readFileSync(file, 'utf8');
+    const r = run(['install-hooks', '--dry-run', 'foo'], envFor(monitor, claude));
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /DRY RUN - nothing written/);
+    assert.equal(fs.readFileSync(file, 'utf8'), before, 'settings.json is untouched');
+    assert.deepEqual(fs.readdirSync(claude), ['settings.json'], 'and no backup was taken either');
+  });
+
+  test('a misspelled flag is refused with exit 2 instead of being ignored', () => {
+    // `install-autostart --dry-runn` used to parse as a flag nobody reads,
+    // leaving dryRun false: it registered a real scheduled task.
+    const { claude, monitor } = claudeDirWith('typo');
+    const r = run(['install-autostart', '--dry-runn'], envFor(monitor, claude));
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /unknown flag --dry-runn/);
+    assert.match(r.stderr, /Usage: node src\/cli\.js/, 'and it prints the usage');
+  });
+
+  test('a typo does not swallow the argument that followed it', () => {
+    const parsed = parseArgs(['tools', '--errrors', 'ea1b82f5']);
+    assert.deepEqual(parsed.errors, ['unknown flag --errrors']);
+    assert.deepEqual(parsed._, ['tools', 'ea1b82f5'], 'the session id is still there');
+  });
+
+  test('usage --json <id> is still a session lookup, not the all-time total', () => {
+    // `--json` took the session id, `usage` was left with no argument, and the
+    // daily aggregate across every transcript came back looking like an answer.
+    const { claude, monitor } = claudeDirWith('usage-json');
+    const r = run(['usage', '--json', 'deadbeef'], envFor(monitor, claude));
+    assert.equal(r.status, 1, 'it looked the session up and did not find it');
+    assert.match(r.stderr, /no session matches "deadbeef"/);
+    assert.equal(r.stdout.trim(), '', 'nothing that could be mistaken for a total');
+  });
+
+  test('a value flag with no value is an error, not a silent default', () => {
+    for (const argv of [['list', '--days'], ['serve', '--port'], ['events', '--date']]) {
+      const parsed = parseArgs(argv);
+      assert.equal(parsed.errors.length, 1, argv.join(' '));
+      assert.match(parsed.errors[0], /needs a value/);
+    }
+  });
+
+  test('--switch=anything-else is refused rather than read as false', () => {
+    const parsed = parseArgs(['install-hooks', '--dry-run=yes']);
+    assert.equal(parsed.errors.length, 1);
+    assert.match(parsed.errors[0], /--dry-run is a switch and takes no value/);
+  });
+
+  test('the flag table and the usage text name exactly the same flags', () => {
+    // The point of the table is that it is the ONE place a flag is declared.
+    // A flag in only one of the two is a flag somebody will type and be told
+    // does not exist, or one that works and is documented nowhere.
+    const documented = flagsNamedIn(usageText());
+    const declared = new Set(Object.keys(FLAGS));
+    assert.deepEqual(
+      [...documented].filter((f) => !declared.has(f)), [],
+      'documented in --help but not accepted by the parser',
+    );
+    assert.deepEqual(
+      [...declared].filter((f) => !documented.has(f)), [],
+      'accepted by the parser but absent from --help',
+    );
+  });
+
+  test('a switch is stored as a real boolean, never the STRING "false"', () => {
+    // Most commands read `args.flags.json` directly rather than through
+    // boolFlag, and the string "false" is truthy.
+    assert.equal(parseArgs(['sessions', '--json=false']).flags.json, false);
+    assert.equal(parseArgs(['sessions', '--json=true']).flags.json, true);
+    assert.equal(parseArgs(['sessions', '--json']).flags.json, true);
+  });
+
+  test('every declared kind is one of the three', () => {
+    for (const [name, kind] of Object.entries(FLAGS)) {
+      assert.ok(['bool', 'value', 'optional'].includes(kind), `${name}: ${kind}`);
+    }
+  });
+});
+
+describe('--port has to be a port', () => {
+  function run(argv) {
+    const dir = path.join(tmp.dir, 'portflag');
+    const claude = path.join(dir, 'claude');
+    const monitor = path.join(dir, 'monitor');
+    fs.mkdirSync(claude, { recursive: true });
+    fs.mkdirSync(monitor, { recursive: true });
+    return spawnSync(process.execPath, [CLI, ...argv], {
+      env: envFor(monitor, claude), encoding: 'utf8', windowsHide: true,
+    });
+  }
+
+  test('install-autostart --port 70000 is refused instead of registering 47321', () => {
+    // resolvePort used to round a bad value off to the default, so this
+    // registered a logon task on a port the user never asked for and had no
+    // way to notice - --dry-run included, which is what they would check.
+    const r = run(['install-autostart', '--port', '70000', '--dry-run']);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /--port must be a whole number 0\.\.65535/);
+    assert.doesNotMatch(r.stdout, /47321/);
+  });
+
+  test('a non-numeric port is refused the same way', () => {
+    const r = run(['tray', '--port', 'eighty', '--dry-run']);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /--port must be a whole number/);
+  });
+
+  test('a good port still gets through', () => {
+    const r = run(['tray', '--port', '50000', '--dry-run']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /port\s+: 50000/);
   });
 });
