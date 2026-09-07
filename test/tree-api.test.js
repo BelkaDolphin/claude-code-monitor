@@ -22,6 +22,9 @@ import {
   TreeCache,
   SessionIndexCache,
   HookHistory,
+  datesForSpan,
+  HOOK_HISTORY_FALLBACK_DAYS,
+  HOOK_HISTORY_MAX_DAYS,
   fingerprint,
   clampInt,
   isSessionId,
@@ -679,6 +682,79 @@ describe('hook history for sessions the collector does not follow', () => {
     now = 1001;
     hh.refresh();
     assert.equal(hh.refreshes, 2);
+  });
+
+  test('it opens only the day files the caller asked for', () => {
+    // Nothing bounded this read: at the measured 7MB/day the first /api/tree
+    // opened every day file ever written. The caller now names the days.
+    const opened = [];
+    const hh = new HookHistory({ dir: eventsDir, ttlMs: 0 });
+    const realReadDay = hh.ingest.readDay.bind(hh.ingest);
+    hh.ingest.readDay = (dateKey) => { opened.push(dateKey); return realReadDay(dateKey); };
+
+    const day = localDateKey(new Date());
+    hh.refresh({ dates: [day] });
+    assert.deepEqual(opened, [day], 'exactly the one day it was given');
+
+    // A day it has never opened is read even inside the TTL...
+    const hh2 = new HookHistory({ dir: eventsDir, ttlMs: 60000, now: () => 0 });
+    const seen = [];
+    const real2 = hh2.ingest.readDay.bind(hh2.ingest);
+    hh2.ingest.readDay = (dateKey) => { seen.push(dateKey); return real2(dateKey); };
+    hh2.refresh({ dates: ['2026-01-01'] });
+    hh2.refresh({ dates: ['2026-01-01'] });
+    assert.deepEqual(seen, ['2026-01-01'], 'a repeat inside the TTL costs nothing');
+    hh2.refresh({ dates: ['2026-01-02'] });
+    assert.deepEqual(seen, ['2026-01-01', '2026-01-02'], 'a NEW day is read despite the TTL');
+    // ...and once the TTL lapses, every day it knows about is re-read.
+    const hh3 = new HookHistory({ dir: eventsDir, ttlMs: 0 });
+    const seen3 = [];
+    const real3 = hh3.ingest.readDay.bind(hh3.ingest);
+    hh3.ingest.readDay = (d) => { seen3.push(d); return real3(d); };
+    hh3.refresh({ dates: ['2026-01-01'] });
+    hh3.refresh({ dates: ['2026-01-02'] });
+    assert.deepEqual(seen3, ['2026-01-01', '2026-01-01', '2026-01-02']);
+  });
+
+  test('session() with no span falls back to a short window, not the whole directory', () => {
+    const opened = [];
+    const hh = new HookHistory({ dir: eventsDir, ttlMs: 0 });
+    const real = hh.ingest.readDay.bind(hh.ingest);
+    hh.ingest.readDay = (d) => { opened.push(d); return real(d); };
+    assert.ok(hh.session(SID), 'today is inside the fallback window');
+    assert.equal(opened.length, HOOK_HISTORY_FALLBACK_DAYS);
+    assert.equal(opened[opened.length - 1], localDateKey(new Date()));
+  });
+});
+
+describe('datesForSpan', () => {
+  const DAY = 24 * 3600 * 1000;
+  const now = new Date(2026, 8, 20, 12, 0, 0).getTime();
+
+  test('a span becomes its own days plus one either side', () => {
+    const from = new Date(2026, 8, 17, 9, 0, 0).getTime();
+    const to = new Date(2026, 8, 18, 9, 0, 0).getTime();
+    assert.deepEqual(datesForSpan({ from, to }, now),
+      ['2026-09-16', '2026-09-17', '2026-09-18', '2026-09-19']);
+  });
+
+  test('ISO strings work as well as epoch ms, and one end is enough', () => {
+    const iso = new Date(2026, 8, 19, 8, 0, 0).toISOString();
+    assert.deepEqual(datesForSpan({ from: iso, to: null }, now), ['2026-09-18', '2026-09-19', '2026-09-20']);
+  });
+
+  test('no span at all is the fallback window ending today', () => {
+    const out = datesForSpan(null, now);
+    assert.equal(out.length, HOOK_HISTORY_FALLBACK_DAYS);
+    assert.equal(out[out.length - 1], '2026-09-20');
+  });
+
+  test('a span reaching into the future stops at now, and a huge one is capped', () => {
+    const future = datesForSpan({ from: now, to: now + 30 * DAY }, now);
+    assert.equal(future[future.length - 1], '2026-09-20', 'nothing was written after now');
+    const huge = datesForSpan({ from: now - 400 * DAY, to: now }, now);
+    assert.ok(huge.length <= HOOK_HISTORY_MAX_DAYS, `capped, got ${huge.length}`);
+    assert.equal(huge[huge.length - 1], '2026-09-20', 'the NEWEST days are the ones kept');
   });
 });
 

@@ -69,11 +69,14 @@ export class JsonlTail {
    * Read everything appended since the previous call.
    *
    * @param {string} file
-   * @returns {{lines: string[], firstLineNo: number, reset: boolean, missing: boolean, bytesRead: number}}
+   * @returns {{lines: string[], firstLineNo: number, reset: boolean, missing: boolean, bytesRead: number, error: any}}
    *   `lines` are complete, newline-terminated lines decoded as UTF-8 (newline
    *   stripped, CR stripped, blank lines removed). `firstLineNo` is the 1-based
    *   file line number of lines[0]. `reset` is true when a truncate/rotate was
    *   detected. `missing` is true when the file does not exist (offset kept).
+   *   `error` is the read failure that cut a multi-chunk read short after at
+   *   least one chunk had already been decoded; the offset stops there and the
+   *   next call resumes cleanly. A failure with nothing decoded still throws.
    */
   read(file) {
     const st = this.stateFor(file);
@@ -81,7 +84,7 @@ export class JsonlTail {
     try {
       stat = fs.statSync(file);
     } catch {
-      return { lines: [], firstLineNo: st.lineNo + 1, reset: false, missing: true, bytesRead: 0 };
+      return { lines: [], firstLineNo: st.lineNo + 1, reset: false, missing: true, bytesRead: 0, error: null };
     }
 
     let didReset = false;
@@ -94,7 +97,7 @@ export class JsonlTail {
     st.size = stat.size;
 
     if (stat.size === st.offset) {
-      return { lines: [], firstLineNo: st.lineNo + 1, reset: didReset, missing: false, bytesRead: 0 };
+      return { lines: [], firstLineNo: st.lineNo + 1, reset: didReset, missing: false, bytesRead: 0, error: null };
     }
 
     const firstLineNo = st.lineNo + 1;
@@ -112,16 +115,31 @@ export class JsonlTail {
       fd = fs.openSync(file, 'r');
     } catch (err) {
       if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
-        return { lines: [], firstLineNo, reset: didReset, missing: true, bytesRead: 0 };
+        return { lines: [], firstLineNo, reset: didReset, missing: true, bytesRead: 0, error: null };
       }
       throw err;
     }
+    /** Set when a LATER chunk failed; the earlier ones are still good. */
+    let readErr = null;
     try {
       const buf = Buffer.allocUnsafe(this.chunkSize);
       let pos = st.offset;
       while (pos < stat.size) {
         const want = Math.min(this.chunkSize, stat.size - pos);
-        const n = fs.readSync(fd, buf, 0, want, pos);
+        let n;
+        try {
+          n = fs.readSync(fd, buf, 0, want, pos);
+        } catch (err) {
+          // A read that fails halfway through a multi-chunk file must not
+          // throw away the chunks that already succeeded: `pending` has their
+          // trailing bytes in it, so re-reading them next time would splice
+          // the same bytes in twice. Stop here, keep the consistent state,
+          // and let the next poll resume from the byte after the last good
+          // chunk. A failure on the FIRST chunk has nothing to hand back and
+          // is rethrown below, as it always was.
+          readErr = err;
+          break;
+        }
         if (n <= 0) break;
         pos += n;
         bytesRead += n;
@@ -144,13 +162,19 @@ export class JsonlTail {
           start = i + 1;
         }
         st.pending = start < chunk.length ? Buffer.from(chunk.subarray(start)) : Buffer.alloc(0);
+        // Advance the offset WITH pending and lineNo, not after the loop.
+        // The three describe one position in the file; updating the offset
+        // last meant a throw on a later chunk left a stale offset next to a
+        // pending buffer that had already moved on, and the next read spliced
+        // the same bytes into the middle of a line.
+        st.offset = pos;
       }
-      st.offset = pos;
+      if (readErr && bytesRead === 0) throw readErr;
     } finally {
       fs.closeSync(fd);
     }
 
-    return { lines, firstLineNo, reset: didReset, missing: false, bytesRead };
+    return { lines, firstLineNo, reset: didReset, missing: false, bytesRead, error: readErr };
   }
 
   /**

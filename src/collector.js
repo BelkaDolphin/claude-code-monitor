@@ -30,7 +30,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 
 import { eventsDir as defaultEventsDir, statuslineDir as defaultStatuslineDir, localDateKey } from './paths.js';
-import { HooksIngest, listEventDates } from './hooks-ingest.js';
+import { HooksIngest, listEventDates, pruneEventFiles, EVENTS_KEEP_DAYS } from './hooks-ingest.js';
 import { readSidecars } from './statusline-sidecar.js';
 import { readLiveSessions } from './sessions.js';
 import { buildSessionIndex } from './session-index.js';
@@ -71,6 +71,8 @@ export class Collector extends EventEmitter {
    * @param {boolean} [opts.watch=true]   use fs.watch in addition to polling
    * @param {boolean} [opts.readTranscripts=true]
    * @param {number} [opts.debounceMs]
+   * @param {number} [opts.eventsKeepDays] retention for events/<date>.jsonl,
+   *   default EVENTS_KEEP_DAYS; 0 or less keeps everything forever
    */
   constructor(opts = {}) {
     super();
@@ -87,6 +89,8 @@ export class Collector extends EventEmitter {
     this.toolTimeoutMs = Number.isFinite(opts.toolTimeoutMs) ? opts.toolTimeoutMs : undefined;
     this.agentStaleMs = Number.isFinite(opts.agentStaleMs) ? opts.agentStaleMs : undefined;
     this.sessionStaleMs = Number.isFinite(opts.sessionStaleMs) ? opts.sessionStaleMs : undefined;
+    /** Retention for our own events/ day files. 0 (or less) disables it. */
+    this.eventsKeepDays = Number.isFinite(opts.eventsKeepDays) ? opts.eventsKeepDays : EVENTS_KEEP_DAYS;
 
     this.state = createState();
     this.startedAt = Date.now();
@@ -109,6 +113,8 @@ export class Collector extends EventEmitter {
       hookEvents: 0,
       hookParseFailures: 0,
       hookReadErrors: 0,
+      eventFilesDeleted: 0,
+      eventPruneErrors: 0,
       sessionsReads: 0,
       sessionsErrors: 0,
       statuslineReads: 0,
@@ -142,6 +148,9 @@ export class Collector extends EventEmitter {
     this.running = true;
 
     this.safeTick('prime-dates', () => this.primeDates());
+    // Before the first read, so a restart is the moment the backlog goes away
+    // even on a machine that never crosses midnight with the server running.
+    this.safeTick('events-prune', () => this.pruneEvents());
     this.safeTick('hooks', () => this.pollHooks());
     await this.safeTick('sessions', () => this.pollSessions(true));
     this.safeTick('statusline', () => this.pollStatusline());
@@ -280,16 +289,60 @@ export class Collector extends EventEmitter {
     return this.activeDates;
   }
 
+  /**
+   * Keep only the two newest day files, OLDEST FIRST.
+   *
+   * `activeDates` is a Set, so iterating it walks insertion order, and at
+   * midnight the day that just ended is the second-newest insertion while the
+   * day before it was inserted first only when the process started before
+   * midnight. The previous code deleted in insertion order and so, after a
+   * start at 00:30 (which primes today then yesterday), the next rollover
+   * dropped the day that had JUST ended and kept the one before it.
+   * @param {string} today
+   */
+  trimActiveDates(today) {
+    const sorted = [...this.activeDates].sort();
+    while (sorted.length > 2) {
+      const oldest = sorted.shift();
+      if (oldest === today) break; // paranoia: never drop the current day
+      this.activeDates.delete(oldest);
+    }
+    return this.activeDates;
+  }
+
+  /**
+   * Delete day files past the retention window. Runs at startup and on the
+   * midnight rollover - never on the 1s tick, which would be a readdir per
+   * second for a directory that changes once a day.
+   */
+  pruneEvents() {
+    if (!(this.eventsKeepDays > 0)) return 0;
+    const r = pruneEventFiles({
+      dir: this.eventsDir,
+      keepDays: this.eventsKeepDays,
+      now: this.nowFn(),
+      onError: (where, err) => this.recordError(where, err),
+    });
+    this.counters.eventFilesDeleted += r.deleted.length;
+    this.counters.eventPruneErrors += r.errors;
+    for (const dateKey of r.deleted) {
+      // The byte offset of a file that no longer exists would sit in the tail
+      // map for the life of the process.
+      this.ingest.tail.reset(this.ingest.fileFor(dateKey));
+      this.activeDates.delete(dateKey);
+    }
+    return r.deleted.length;
+  }
+
   pollHooks() {
     const today = localDateKey(this.nowFn());
-    if (!this.activeDates.has(today)) {
-      // Day rolled over. Keep reading yesterday one more round so the last
-      // events written before midnight are not lost, then drop it next roll.
-      this.activeDates.add(today);
-      for (const d of [...this.activeDates]) {
-        if (d < today && this.activeDates.size > 2) this.activeDates.delete(d);
-      }
-    }
+    // Day rolled over. The new file joins the set BEFORE this tick reads, and
+    // the old ones are trimmed only AFTER it: the day that just ended still
+    // had events appended to it in its last fraction of a second (a SessionEnd
+    // at 23:59:59.8 is the measured case) and dropping it first loses them for
+    // good, because nothing ever reads that file again.
+    const rolled = !this.activeDates.has(today);
+    if (rolled) this.activeDates.add(today);
     let changed = false;
     for (const dateKey of [...this.activeDates].sort()) {
       let events;
@@ -312,6 +365,10 @@ export class Collector extends EventEmitter {
           this.recordError(`reduce:${ev && ev.event}`, err);
         }
       }
+    }
+    if (rolled) {
+      this.trimActiveDates(today);
+      this.safeTick('events-prune', () => this.pruneEvents());
     }
     this.counters.hookParseFailures = this.ingest.parseFailures;
     if (changed) this.markChanged();
@@ -623,6 +680,7 @@ export class Collector extends EventEmitter {
       unknownEvents: Object.fromEntries(this.ingest.unknownEvents),
       recentErrors: this.recentErrors.slice(-5),
       activeDates: [...this.activeDates].sort(),
+      eventsKeepDays: this.eventsKeepDays,
       watchers: this.watchers.length,
       sessionsTracked: Object.keys(this.state.sessions).length,
       indexedSessions: this.indexBySession.size,
@@ -696,11 +754,18 @@ export class Collector extends EventEmitter {
       this.counters.changes += 1;
       this.emit('change');
     };
+    // The whole emit runs inside safeTick, because this is the third place
+    // with no catch site above it: a setTimeout callback. `emit('change')`
+    // calls straight into the server's SSE broadcast, and a listener that
+    // throws (a snapshot that will not serialize, a socket in a state we did
+    // not expect) would otherwise become an uncaughtException and take the
+    // monitor down - the one failure mode 4.7 exists to prevent.
+    const guarded = () => this.safeTick('emit-change', fire);
     if (this.debounceMs <= 0) {
-      fire();
+      guarded();
       return;
     }
-    this.debounceTimer = setTimeout(fire, this.debounceMs);
+    this.debounceTimer = setTimeout(guarded, this.debounceMs);
     if (typeof this.debounceTimer.unref === 'function') this.debounceTimer.unref();
   }
 }

@@ -74,9 +74,12 @@ Commands:
   tools <sessionId|prefix> [--limit N] [--errors]
   events [--date YYYY-MM-DD] [--limit N] [--state] [--utc]
   serve [--port N] [--open] [--persist-token] [--rotate-token]
-        [--token-file P] [--log-file [P]]
+        [--token-file P] [--log-file [P]] [--events-keep-days N]
                                  live dashboard on http://127.0.0.1:<port>
                                  (default 47321; --port or CLAUDE_MONITOR_PORT)
+                                 --events-keep-days sets how many days of
+                                 <monitorDir>/events are kept (default 30,
+                                 0 keeps everything)
   rotate-token [--token-file P] [--port N]
                                  replace the STORED token; the running server
                                  keeps the old one until it is restarted
@@ -710,6 +713,25 @@ export function boolFlag(args, name) {
 }
 
 /**
+ * A flag whose value is a non-negative whole number.
+ *
+ * A bare `--flag`, a missing one and anything that is not a number all fall
+ * back: a typo must not silently turn a retention policy into "keep nothing".
+ * An explicit `0` is a real answer and is kept.
+ * @param {{flags: Record<string, any>}} args
+ * @param {string} name
+ * @param {number|undefined} fallback
+ * @returns {number|undefined}
+ */
+export function countFlag(args, name, fallback) {
+  const v = args.flags[name];
+  if (v === undefined || v === true) return fallback;
+  const n = Number(String(v).trim());
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.floor(n);
+}
+
+/**
  * A flag that may be given bare (use the default path) or with a path.
  * `--log-file` -> the default; `--log-file X` -> X; absent -> null.
  *
@@ -791,9 +813,14 @@ async function cmdServe(args) {
   // `--rotate-token`-ed) first, the instance that LOSES the race would have
   // replaced the secret of the instance that is actually serving, and the
   // user's bookmark would start returning 403 for no visible reason.
+  const eventsKeepDays = countFlag(args, 'events-keep-days', undefined);
+
   let handle;
   try {
-    handle = await startServer({ port });
+    handle = await startServer({
+      port,
+      collectorOptions: eventsKeepDays === undefined ? undefined : { eventsKeepDays },
+    });
   } catch (err) {
     if (err && err.code === 'EADDRINUSE') fail(err.message);
     throw err;

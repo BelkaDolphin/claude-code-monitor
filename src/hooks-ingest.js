@@ -96,6 +96,9 @@ function str(v) {
   return typeof v === 'string' && v.length ? v : null;
 }
 
+/** The only file name we ever create in - or delete from - the events dir. */
+const DAY_FILE_RE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
+
 /** List available event date keys, newest last. */
 export function listEventDates(dir = eventsDir()) {
   let ents;
@@ -105,9 +108,57 @@ export function listEventDates(dir = eventsDir()) {
     return [];
   }
   return ents
-    .filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f))
+    .filter((f) => DAY_FILE_RE.test(f))
     .map((f) => f.slice(0, -'.jsonl'.length))
     .sort();
+}
+
+/**
+ * How many days of `<monitorDir>/events/<date>.jsonl` we keep.
+ *
+ * Measured at ~7MB/day on one busy machine, and nothing was ever deleting
+ * them. 30 days matches the window Claude Code itself keeps transcripts for
+ * (known constraint 7), so beyond it the Tree view has no transcript to pair
+ * the hook history with anyway.
+ */
+export const EVENTS_KEEP_DAYS = 30;
+
+/**
+ * Delete day files older than the retention window.
+ *
+ * Deletion is deliberately narrow: only inside our OWN events directory, only
+ * names that are exactly `YYYY-MM-DD.jsonl`, and only dates strictly older
+ * than the cutoff. Anything else in that directory is left alone.
+ *
+ * @param {Object} [opts]
+ * @param {string} [opts.dir]
+ * @param {number} [opts.keepDays]  0 or less disables pruning entirely
+ * @param {Date|number} [opts.now]
+ * @param {(where: string, err: any) => void} [opts.onError]
+ * @returns {{deleted: string[], cutoff: string|null, errors: number}}
+ */
+export function pruneEventFiles(opts = {}) {
+  const keepDays = Number.isFinite(opts.keepDays) ? opts.keepDays : EVENTS_KEEP_DAYS;
+  if (!(keepDays > 0)) return { deleted: [], cutoff: null, errors: 0 };
+  const dir = opts.dir ?? eventsDir();
+  const now = opts.now instanceof Date ? opts.now : new Date(opts.now ?? Date.now());
+  // keepDays counts calendar days INCLUDING today, so keepDays=1 keeps only
+  // today's file and keepDays=30 keeps today plus the previous 29.
+  const cutoff = localDateKey(new Date(now.getTime() - (keepDays - 1) * 24 * 3600 * 1000));
+  if (!cutoff) return { deleted: [], cutoff: null, errors: 0 };
+  const deleted = [];
+  let errors = 0;
+  for (const dateKey of listEventDates(dir)) {
+    if (dateKey >= cutoff) continue;
+    try {
+      fs.rmSync(path.join(dir, `${dateKey}.jsonl`), { force: true });
+      deleted.push(dateKey);
+    } catch (err) {
+      errors += 1;
+      if (typeof opts.onError === 'function') opts.onError(`events-prune:${dateKey}`, err);
+    }
+  }
+  return { deleted, cutoff, errors };
 }
 
 /**

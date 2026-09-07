@@ -162,6 +162,30 @@ function sendJson(req, res, status, obj, extraHeaders = {}) {
  * shows as "something is wrong with the data".
  * @param {{recordError?: Function}} collector
  */
+/**
+ * When a session ran, from its index entry, so the hook history only opens the
+ * day files that could hold its events.
+ *
+ * `firstTs`/`lastTs` are the transcript's own timestamps and are the honest
+ * answer; `mtimeMs` is the fallback for an entry built without them
+ * (`withCwd:false`) and for a transcript whose records carry no timestamp.
+ * Returning null means "no idea", and the fallback window applies.
+ * @param {any} entry
+ * @returns {{from: number, to: number}|null}
+ */
+function spanOfEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const mtime = Number.isFinite(entry.mtimeMs) && entry.mtimeMs > 0 ? entry.mtimeMs : null;
+  const parse = (v) => {
+    const t = typeof v === 'string' && v ? Date.parse(v) : NaN;
+    return Number.isFinite(t) ? t : null;
+  };
+  const from = parse(entry.firstTs) ?? mtime;
+  const to = parse(entry.lastTs) ?? mtime;
+  if (from === null && to === null) return null;
+  return { from: from ?? to, to: to ?? from };
+}
+
 function defaultOnError(collector) {
   return (where, err) => {
     if (collector && typeof collector.recordError === 'function') {
@@ -293,13 +317,16 @@ export function createRequestHandler(deps) {
    * following that session (it also carries statusline and PID facts), else the
    * event history folded on demand.
    */
-  function hookSessionOf(sessionId) {
+  function hookSessionOf(sessionId, entry) {
     const snap = collector.snapshot();
     for (const s of snap.sessions || []) {
       if (s.sessionId === sessionId) return s;
     }
     try {
-      return hookHistory.session(sessionId);
+      // The index entry is what tells HookHistory which day files to open.
+      // Without it the fallback window is a few days, which is right for a
+      // live session and wrong for one from last month.
+      return hookHistory.session(sessionId, spanOfEntry(entry));
     } catch (err) {
       onError('hook-history', err);
       return null;
@@ -366,7 +393,7 @@ export function createRequestHandler(deps) {
     sendJson(req, res, 200, buildTreeView({
       entry,
       cache: treeCache,
-      hookSession: hookSessionOf(sessionId),
+      hookSession: hookSessionOf(sessionId, entry),
     }));
   }
 
@@ -444,12 +471,17 @@ export function createRequestHandler(deps) {
       case '/api/usage':
         return guard('api:usage', req, res, () => handleUsage(req, res));
 
+      // The three original M2 routes ran outside `guard`, on the assumption
+      // that building a snapshot cannot fail. It can: `JSON.stringify` throws
+      // on a circular value or a BigInt that a future field brings in, and the
+      // snapshot is assembled from four on-disk sources. Unguarded that is an
+      // uncaught exception in an http callback - the whole monitor gone
+      // because somebody refreshed the dashboard (architecture 4.7).
       case '/api/state':
-        sendJson(req, res, 200, collector.snapshot());
-        return;
+        return guard('api:state', req, res, () => sendJson(req, res, 200, collector.snapshot()));
 
       case '/api/health':
-        sendJson(req, res, 200, {
+        return guard('api:health', req, res, () => sendJson(req, res, 200, {
           ok: true,
           uptime: Math.round((Date.now() - startedAt) / 1000),
           uptimeMs: Date.now() - startedAt,
@@ -459,24 +491,23 @@ export function createRequestHandler(deps) {
           hookHistory: hookHistory.stats(),
           usageCache: usageCache.stats(),
           ccusage: ccusageCache.stats(),
-        });
-        return;
+        }));
 
-      case '/api/stream': {
-        // A stream has no meaningful "headers only" form: HEAD would open a
-        // subscription nobody reads and hold one of the 8 slots.
-        if (req.method === 'HEAD') {
-          sendText(req, res, 405, 'method not allowed\n', { Allow: 'GET' });
-          return;
-        }
-        const added = sse.add(req, res, securityHeaders());
-        if (!added.ok) {
-          sendText(req, res, 503, `stream unavailable: ${added.reason}\n`);
-          return;
-        }
-        sse.send(added.client, 'snapshot', collector.snapshot());
-        return;
-      }
+      case '/api/stream':
+        return guard('api:stream', req, res, () => {
+          // A stream has no meaningful "headers only" form: HEAD would open a
+          // subscription nobody reads and hold one of the 8 slots.
+          if (req.method === 'HEAD') {
+            sendText(req, res, 405, 'method not allowed\n', { Allow: 'GET' });
+            return;
+          }
+          const added = sse.add(req, res, securityHeaders());
+          if (!added.ok) {
+            sendText(req, res, 503, `stream unavailable: ${added.reason}\n`);
+            return;
+          }
+          sse.send(added.client, 'snapshot', collector.snapshot());
+        });
 
       default:
         sendText(req, res, 404, 'not found\n');

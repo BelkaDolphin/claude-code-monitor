@@ -26,9 +26,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/** Relative CLAUDE_MONITOR_DIR resolves against HOME - see src/paths.js. */
 function monitorDir() {
   const env = process.env.CLAUDE_MONITOR_DIR;
-  if (env && env.trim()) return path.resolve(env.trim());
+  if (env && env.trim()) {
+    const v = env.trim();
+    return path.isAbsolute(v) ? path.resolve(v) : path.resolve(os.homedir(), v);
+  }
   return path.join(os.homedir(), '.claude-monitor');
 }
 

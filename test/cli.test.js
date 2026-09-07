@@ -22,7 +22,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { makeTmpDir } from './helpers.js';
-import { parseArgs, boolFlag, pathFlag } from '../src/cli.js';
+import { parseArgs, boolFlag, pathFlag, countFlag } from '../src/cli.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'src', 'cli.js');
@@ -358,6 +358,19 @@ describe('the flags that decide whether there is a log at all', () => {
     assert.equal(boolFlag(parseArgs(['serve', '--open=false']), 'open'), false);
     assert.equal(boolFlag(parseArgs(['serve', '--open', 'false']), 'open'), false);
     assert.equal(boolFlag(parseArgs(['serve']), 'open'), false);
+  });
+
+  test('countFlag takes only non-negative whole numbers, and 0 is a real answer', () => {
+    const f = (argv) => countFlag(parseArgs(argv), 'events-keep-days', 30);
+    assert.equal(f(['serve', '--events-keep-days', '7']), 7);
+    assert.equal(f(['serve', '--events-keep-days=7']), 7);
+    assert.equal(f(['serve', '--events-keep-days', '0']), 0, '0 means "keep everything"');
+    assert.equal(f(['serve']), 30);
+    // A typo must not silently become a retention policy of its own.
+    assert.equal(f(['serve', '--events-keep-days']), 30, 'a bare flag falls back');
+    assert.equal(f(['serve', '--events-keep-days', 'seven']), 30);
+    assert.equal(f(['serve', '--events-keep-days', '-3']), 30);
+    assert.equal(f(['serve', '--events-keep-days', '7.9']), 7);
   });
 
   test('a bare --token-file still means "persist, at the default path"', () => {

@@ -20,9 +20,19 @@ import path from 'node:path';
 
 const MAX_STDIN = 4 * 1024 * 1024; // 4MB guard; payloads are normally tiny
 
+/**
+ * Same rule as src/paths.js monitorDir(): a relative CLAUDE_MONITOR_DIR is
+ * resolved against HOME. This process is started by Claude Code with the
+ * PROJECT as its cwd, while the server is started from wherever the user ran
+ * it - resolving against cwd would put the events somewhere the server never
+ * looks.
+ */
 function monitorDir() {
   const env = process.env.CLAUDE_MONITOR_DIR;
-  if (env && env.trim()) return path.resolve(env.trim());
+  if (env && env.trim()) {
+    const v = env.trim();
+    return path.isAbsolute(v) ? path.resolve(v) : path.resolve(os.homedir(), v);
+  }
   return path.join(os.homedir(), '.claude-monitor');
 }
 

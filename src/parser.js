@@ -293,7 +293,7 @@ export function parseLine(raw, lineNo, ctx = {}) {
     subtype: str(obj.subtype),
     // type:'ai-title' records are {type, aiTitle, sessionId} - no timestamp.
     // The last one in a transcript is the current title.
-    aiTitle: str(obj.aiTitle),
+    aiTitle: title(obj.aiTitle),
     toolUseResult: type === 'user' ? (obj.toolUseResult ?? null) : null,
     isMeta: obj.isMeta === true,
     lineNo,
@@ -304,6 +304,22 @@ export function parseLine(raw, lineNo, ctx = {}) {
 
 function str(v) {
   return typeof v === 'string' && v.length ? v : null;
+}
+
+/** A session title is a header, not a document. */
+const MAX_TITLE_CHARS = 500;
+
+/**
+ * A title we are willing to carry around. The transcript is a file on disk we
+ * do not control, so nothing read out of it gets to be unbounded: an ai-title
+ * record with a megabyte in it would otherwise travel through state, the
+ * snapshot and the SSE payload to every open tab.
+ * @param {unknown} v
+ */
+function title(v) {
+  const s = str(v);
+  if (s === null) return null;
+  return s.length > MAX_TITLE_CHARS ? `${s.slice(0, MAX_TITLE_CHARS)}…` : s;
 }
 
 /** Convenience: tool_use blocks of a record. */

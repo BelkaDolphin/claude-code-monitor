@@ -29,10 +29,24 @@ export function sessionsDir() {
   return path.join(claudeHome(), 'sessions');
 }
 
-/** @returns {string} our own writable data dir */
+/**
+ * Our own writable data dir.
+ *
+ * A RELATIVE `CLAUDE_MONITOR_DIR` is resolved against the HOME directory, not
+ * against cwd. The server and the hooks are different processes started from
+ * different places - the server from wherever the user (or the logon task) ran
+ * it, `hooks/monitor-hook.js` from whatever project directory Claude Code
+ * happens to be in - so a cwd-relative value would have them write to and read
+ * from two different directories and the dashboard would stay empty forever.
+ * hooks/monitor-hook.js and hooks/statusline.js carry the same three lines.
+ * @returns {string}
+ */
 export function monitorDir() {
   const env = process.env.CLAUDE_MONITOR_DIR;
-  if (env && env.trim()) return path.resolve(env.trim());
+  if (env && env.trim()) {
+    const v = env.trim();
+    return path.isAbsolute(v) ? path.resolve(v) : path.resolve(os.homedir(), v);
+  }
   return path.join(os.homedir(), '.claude-monitor');
 }
 

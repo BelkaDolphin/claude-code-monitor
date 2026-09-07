@@ -130,14 +130,31 @@ const MAX_PROMPT_CHARS = 200;
  * attachment placeholder - measured: sending an image rewrote the title to
  * "Image #1". Those carry no information about the session, so they are
  * refused and the previous good title (or the cwd) stays.
+ *
+ * Written to stay LINEAR. The first version ended `\s*#?\d*\s*\]?$`, which put
+ * two nullable `\s*` runs next to each other: on a long non-matching string
+ * ("image" + many spaces + "x") the engine tried every way of splitting the
+ * spaces between them, which is quadratic - measured 265ms at 16k characters,
+ * and the input is a title that arrives from a transcript file. The numeric
+ * part is now one alternation that must end on `\d+` or on `#`, so no two
+ * adjacent groups can both match the same space.
  */
-const PLACEHOLDER_TITLE_RE = /^\[?\s*(image|screenshot|pasted(\s+\w+)?|attachment|file)\s*#?\d*\s*\]?$/i;
+const PLACEHOLDER_TITLE_RE = /^\[?\s*(?:image|screenshot|pasted(?:\s+\w+)?|attachment|file)(?:\s*#?\d+|\s*#)?\s*\]?$/i;
+
+/**
+ * Longest title we bother pattern-matching. A placeholder is a handful of
+ * characters; anything past this is real text and is useful by definition.
+ * The cap is also the backstop for the regex above: no input reaches it long
+ * enough for even a linear scan to cost anything.
+ */
+const MAX_TITLE_MATCH_CHARS = 200;
 
 /** @param {unknown} t @returns {boolean} */
 export function isUsefulTitle(t) {
   if (typeof t !== 'string') return false;
   const trimmed = t.trim();
   if (!trimmed) return false;
+  if (trimmed.length > MAX_TITLE_MATCH_CHARS) return true;
   return !PLACEHOLDER_TITLE_RE.test(trimmed);
 }
 

@@ -774,6 +774,110 @@ describe('review 2026-09-03: hardening', () => {
   });
 });
 
+describe('the M2 routes are guarded too (4.7)', () => {
+  /**
+   * A server whose collector cannot produce a snapshot. This is the failure
+   * the guards exist for: `/api/state`, `/api/health` and `/api/stream` all
+   * called straight into the collector with no catch site above them, so one
+   * throw in an http callback took the whole monitor down.
+   */
+  async function withBrokenCollector(fn) {
+    const errors = [];
+    const broken = {
+      snapshot() { throw new Error('snapshot exploded'); },
+      stats() { throw new Error('stats exploded'); },
+      recordError(where, err) { errors.push({ where, err }); },
+      on() {},
+      off() {},
+      eventsDir: path.join(tmp.dir, 'events'),
+      statuslineDir: path.join(tmp.dir, 'statusline'),
+      projectsRoot: path.join(tmp.dir, 'projects'),
+    };
+    const h = await startServer({ port: 0, collector: broken, monitorDir });
+    try {
+      await fn(h, errors);
+    } finally {
+      await h.close();
+    }
+  }
+
+  /** GET against an arbitrary handle, with that handle's own cookie. */
+  function getFrom(h, p, method = 'GET') {
+    return new Promise((resolve, reject) => {
+      const req = http.request({
+        host: '127.0.0.1', port: h.port, path: p, method,
+        headers: { Cookie: `${COOKIE_NAME}=${h.token}` },
+      }, (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  test('/api/state answers 500 JSON instead of killing the process', async () => {
+    await withBrokenCollector(async (h, errors) => {
+      const res = await getFrom(h, '/api/state');
+      assert.equal(res.status, 500);
+      assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'internal error' });
+      assert.ok(errors.some((e) => e.where === 'http:api:state'), 'the failure was recorded');
+      // ...and the listener is still up.
+      assert.equal((await getFrom(h, '/nope')).status, 404);
+    });
+  });
+
+  test('/api/health answers 500 JSON rather than throwing out of the callback', async () => {
+    await withBrokenCollector(async (h) => {
+      const res = await getFrom(h, '/api/health');
+      assert.equal(res.status, 500);
+      assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'internal error' });
+    });
+  });
+
+  test('/api/stream survives a snapshot it cannot build', async () => {
+    await withBrokenCollector(async (h, errors) => {
+      // The subscription opens (headers are sent) and then the first snapshot
+      // throws. Nothing may escape; the next request must still be served.
+      await new Promise((resolve, reject) => {
+        const req = http.request({
+          host: '127.0.0.1', port: h.port, path: '/api/stream', method: 'GET',
+          headers: { Cookie: `${COOKIE_NAME}=${h.token}` },
+        }, (res) => { res.destroy(); resolve(); });
+        req.on('error', reject);
+        req.end();
+      });
+      await new Promise((r) => setTimeout(r, 30));
+      assert.ok(errors.some((e) => e.where === 'http:api:stream'), 'the failure was recorded');
+      assert.equal((await getFrom(h, '/nope')).status, 404);
+    });
+  });
+
+  test('a snapshot that will not serialize is a 500, not a crash', async () => {
+    // JSON.stringify inside sendJson is the other unguarded step: a circular
+    // value reaching the snapshot used to throw straight into http's callback.
+    const circular = { ok: true };
+    circular.self = circular;
+    const errors = [];
+    const collector = {
+      snapshot: () => circular,
+      stats: () => ({}),
+      recordError: (where, err) => errors.push({ where, err }),
+      on() {}, off() {},
+    };
+    const h = await startServer({ port: 0, collector, monitorDir });
+    try {
+      const res = await getFrom(h, '/api/state');
+      assert.equal(res.status, 500);
+      assert.ok(errors.some((e) => e.where === 'http:api:state'));
+    } finally {
+      await h.close();
+    }
+  });
+});
+
 describe('crash handlers', () => {
   test('installCrashHandlers records, closes and reports without exiting the test run', async () => {
     const closed = [];
@@ -1344,7 +1448,29 @@ describe('notification settings: the panel the server actually hands out', () =>
   });
 
   test('the first snapshot primes the quota alerts instead of firing them', () => {
-    assert.match(js, /fireQuotaNotifications\(limits, !firstSnapshotSeen\);/);
+    // `firstSnapshotSeen` is latched at the TOP of render() now, so that a
+    // throw further down cannot leave it false forever (which would re-prime
+    // the baseline on every snapshot and never notify again). The "is this the
+    // first one" answer therefore has to be taken into `first` before the flag
+    // is set, and every branch below reads `first`.
+    assert.match(js, /var first = !firstSnapshotSeen;[\s\S]{0,40}firstSnapshotSeen = true;/);
+    assert.match(js, /if \(first\) primeNotifications\(/);
+    assert.match(js, /fireQuotaNotifications\(limits, first\);/);
+  });
+
+  test('a throwing render() cannot freeze the page silently', () => {
+    // The SSE handler guarded JSON.parse but not render(). A throw there is
+    // uncaught inside the EventSource callback: the stream stays open, every
+    // later snapshot dies in the same place, and the tab keeps showing stale
+    // data - the one failure a monitor must never have. Assert the call is
+    // inside a try and that the failure reaches the connection line.
+    const body = bodyOf(js, 'function connect(');
+    assert.match(body, /try \{\s*\n\s*render\(data\);\s*\n\s*\} catch/,
+      'render(data) is not inside a try in the snapshot listener');
+    assert.match(body, /setConnection\('down', '描画エラー[^']*'\)/,
+      'a render failure is not reported in the connection line');
+    // setText, not innerHTML - the same rule as everywhere else on this page.
+    assert.equal(/innerHTML/.test(body), false);
   });
 
   test('the test notification deliberately ignores quietWhenFocused', () => {

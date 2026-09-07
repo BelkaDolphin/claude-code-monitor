@@ -32,6 +32,7 @@
  */
 
 import { HooksIngest } from './hooks-ingest.js';
+import { localDateKey } from './paths.js';
 import { buildSessionIndex, listSubagents } from './session-index.js';
 import { createState, isLive, isoTime, pruneSessions, reduceAll, sweepStale, toPublicSession } from './state.js';
 import { buildTree } from './tree.js';
@@ -247,6 +248,16 @@ export class SessionIndexCache {
  * cost is one full pass at first use and a stat per file afterwards. Measured:
  * 5.3 MB across two day files, 999 events, 41 ms for the first pass.
  *
+ * That first pass is only cheap while `events/` is small, and nothing used to
+ * bound it: at the measured 7MB/day the first `/api/tree` request opened every
+ * day file ever written (446 ms, +106 MB heap). So the caller says WHICH DAYS
+ * it needs - the span of the session being opened, plus a day either side for
+ * the local/UTC disagreement across midnight - and days it never asks for are
+ * never opened. `datesRead` remembers what has been opened, so a day that is
+ * new to this request is read even inside the TTL while a repeat request
+ * inside the TTL still costs nothing. With no span the fallback window is
+ * HOOK_HISTORY_FALLBACK_DAYS.
+ *
  * Memory is bounded the same way the collector bounds it: `pruneSessions`
  * keeps at most MAX_ARCHIVED_SESSIONS finished sessions. A session that falls
  * off simply loses its hook layer and is served from the transcript alone.
@@ -261,20 +272,38 @@ export class HookHistory {
     this.refreshes = 0;
     this.eventsRead = 0;
     this.readErrors = 0;
+    /** Day keys this instance has opened at least once. */
+    this.datesRead = new Set();
   }
 
-  refresh(force = false) {
+  /**
+   * @param {{dates?: string[]|null, force?: boolean}|boolean} [opts]
+   *   a bare boolean is still accepted for the old `refresh(force)` shape.
+   */
+  refresh(opts = {}) {
+    const o = typeof opts === 'boolean' ? { force: opts } : (opts || {});
+    const force = o.force === true;
+    const asked = Array.isArray(o.dates) ? o.dates : datesForSpan(null, this.now());
     const t = this.now();
-    if (!force && t - this.builtAt < this.ttlMs) return this.state;
-    this.builtAt = t;
+    // Inside the TTL the bytes we already have count as fresh - but a day file
+    // we have never opened has no bytes at all, so that one is read anyway.
+    const targets = new Set();
+    const fresh = !force && t - this.builtAt < this.ttlMs;
+    for (const d of asked) if (!fresh || !this.datesRead.has(d)) targets.add(d);
+    if (!fresh) for (const d of this.datesRead) targets.add(d);
+    if (!targets.size) return this.state;
+
+    if (!fresh) this.builtAt = t;
     this.refreshes += 1;
     let events = [];
+    const dates = [...targets].sort();
     try {
-      events = this.ingest.readAll();
+      events = this.ingest.readAll({ dates });
     } catch {
       this.readErrors += 1;
       return this.state;
     }
+    for (const d of dates) this.datesRead.add(d);
     this.eventsRead += events.length;
     if (events.length) this.state = reduceAll(this.state, events).state;
     // Without the sweep a ghost agent (no SubagentStop, ever) would read
@@ -284,9 +313,15 @@ export class HookHistory {
     return this.state;
   }
 
-  /** @returns {any|null} the wire shape of one session, hooks only. */
-  session(sessionId) {
-    const s = this.refresh().sessions[sessionId];
+  /**
+   * @param {string} sessionId
+   * @param {{from?: number|string|null, to?: number|string|null}|null} [span]
+   *   when the session ran, so only the day files that could hold its events
+   *   are opened. Omitted or unusable falls back to the last few days.
+   * @returns {any|null} the wire shape of one session, hooks only.
+   */
+  session(sessionId, span = null) {
+    const s = this.refresh({ dates: datesForSpan(span, this.now()) }).sessions[sessionId];
     return s ? toPublicSession(s) : null;
   }
 
@@ -295,9 +330,67 @@ export class HookHistory {
       refreshes: this.refreshes,
       eventsRead: this.eventsRead,
       readErrors: this.readErrors,
+      datesRead: this.datesRead.size,
       sessions: Object.keys(this.state.sessions).length,
     };
   }
+}
+
+/** Days read when the caller cannot say when the session ran. */
+export const HOOK_HISTORY_FALLBACK_DAYS = 7;
+
+/**
+ * Ceiling on how many day files one request may open, so a session with a
+ * nonsense span (a bad clock, a transcript resumed from months ago) cannot
+ * turn back into the unbounded read this replaced. The NEWEST days are kept.
+ */
+export const HOOK_HISTORY_MAX_DAYS = 45;
+
+/**
+ * The day keys that could hold a session's events: its span widened by a day
+ * at each end. The widening is not cosmetic - the hook writes `receivedAt` and
+ * files by LOCAL date while transcript timestamps are UTC, so the two disagree
+ * about which file an event near midnight lives in.
+ *
+ * @param {{from?: number|string|null, to?: number|string|null}|null} span
+ * @param {number|Date} [now]
+ * @returns {string[]} ascending date keys
+ */
+export function datesForSpan(span, now = Date.now()) {
+  const DAY = 24 * 3600 * 1000;
+  const nowMs = now instanceof Date ? now.getTime() : Number(now);
+  const end = Number.isFinite(nowMs) ? nowMs : Date.now();
+  const from = msOf(span && span.from);
+  const to = msOf(span && span.to);
+  let lo;
+  let hi;
+  if (from === null && to === null) {
+    hi = end;
+    lo = end - (HOOK_HISTORY_FALLBACK_DAYS - 1) * DAY;
+  } else {
+    lo = (from ?? to) - DAY;
+    hi = (to ?? from) + DAY;
+  }
+  // Nothing can have been written after now, and a `to` in the future (clock
+  // skew) must not make us walk forward.
+  if (hi > end) hi = end;
+  if (lo > hi) lo = hi;
+  /** @type {string[]} */
+  const out = [];
+  for (let t = lo; t <= hi; t += DAY) {
+    const k = localDateKey(new Date(t));
+    if (k && out[out.length - 1] !== k) out.push(k);
+    if (out.length >= HOOK_HISTORY_MAX_DAYS * 2) break;
+  }
+  const endKey = localDateKey(new Date(hi));
+  if (endKey && out[out.length - 1] !== endKey) out.push(endKey);
+  return out.length > HOOK_HISTORY_MAX_DAYS ? out.slice(-HOOK_HISTORY_MAX_DAYS) : out;
+}
+
+/** ISO string or epoch ms -> epoch ms, else null. */
+function msOf(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  return tsOf(v);
 }
 
 function tsOf(iso) {

@@ -332,7 +332,16 @@
       try { data = JSON.parse(ev.data); } catch (e) { return; }
       backoff = 1000;
       setConnection('open', 'SSE 接続');
-      render(data);
+      // JSON.parse was already guarded; render() was not. A throw here escapes
+      // into the EventSource callback, where nothing catches it: the stream
+      // stays open, every later snapshot throws in the same place, and the
+      // page silently freezes on stale data - the failure the dashboard exists
+      // to make impossible. Say so in the connection line instead.
+      try {
+        render(data);
+      } catch (e) {
+        setConnection('down', '描画エラー - 再読み込みしてください');
+      }
     });
     es.addEventListener('error', function () {
       // EventSource retries on its own, but a 503 (too many clients) closes it
@@ -357,6 +366,11 @@
 
   function render(data) {
     snapshot = data;
+    // Claimed BEFORE anything that can throw. This used to be set at the very
+    // end, so one bad render left it false forever: every later snapshot would
+    // re-prime the notification baseline and never fire a notification again.
+    var first = !firstSnapshotSeen;
+    firstSnapshotSeen = true;
     var counts = data.counts || {};
     setText($('stat-live'), counts.live == null ? '-' : counts.live);
     var waitingCount = counts.waiting || 0;
@@ -379,10 +393,9 @@
 
     // The first snapshot only records where things stand. Announcing it would
     // mean a burst of notifications every time the tab reconnects.
-    if (firstSnapshotSeen) fireNotifications(data.sessions || []);
-    else primeNotifications(data.sessions || []);
-    fireQuotaNotifications(limits, !firstSnapshotSeen);
-    firstSnapshotSeen = true;
+    if (first) primeNotifications(data.sessions || []);
+    else fireNotifications(data.sessions || []);
+    fireQuotaNotifications(limits, first);
 
     onSnapshotForTree();
     onSnapshotForUsage();

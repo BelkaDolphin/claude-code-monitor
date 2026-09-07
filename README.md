@@ -203,6 +203,12 @@ node src/cli.js uninstall-hooks
   `SubagentStart` / `SubagentStop` / `PreToolUse` / `PostToolUse` /
   `PostToolUseFailure` / `Notification` / `PreCompact` / `PostCompact`。
 - 反映は**新しいセッションから**。
+- hooks は `~/.claude-monitor/events/<YYYY-MM-DD>.jsonl` に1イベント1行を追記する。
+  実測で**約7MB/日**貯まるので、サーバが**既定30日で古い日のファイルを削除する**
+  （`serve --events-keep-days N`、`0` で無期限）。削除は起動時と日跨ぎ時だけ、
+  対象は `YYYY-MM-DD.jsonl` に完全一致する名前のみ。
+  保持日数より古いセッションを Tree で開くと hook の証跡が無いので、
+  エージェントの状態は transcript からの推定にフォールバックする。
 
 ### 常駐化（任意）
 
@@ -347,7 +353,7 @@ taskkill /PID <pid> /F
 | 変数 | 既定 | 用途 |
 |---|---|---|
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code の設定ディレクトリ |
-| `CLAUDE_MONITOR_DIR` | `~/.claude-monitor` | 本ツールの書き込み先 |
+| `CLAUDE_MONITOR_DIR` | `~/.claude-monitor` | 本ツールの書き込み先。**相対パスを指定した場合はホームディレクトリ基準**で解決する（cwd 基準ではない）。サーバは起動した cwd、hook は Claude Code のプロジェクト cwd で動くので、cwd 基準にすると両者が別の場所を見てダッシュボードが空のままになるため |
 | `CLAUDE_MONITOR_PORT` | `47321` | `serve` の待受ポート（`--port` が優先） |
 | `CLAUDE_MONITOR_IT` | 未設定 | `1` で統合テスト（実データ + ccusage）を有効化 |
 | `CLAUDE_MONITOR_TEST_DIR` | OSのtemp | テストが作る一時ディレクトリの親 |
@@ -369,7 +375,7 @@ node src/cli.js <command> [options]
 | `usage --daily [--since D] [--until D] [--compare-ccusage]` | 日付別集計と ccusage との突合 |
 | `tools <sessionId\|prefix> [--limit N] [--errors] [--utc]` | ツール実行ログ。時刻はローカル（`--utc` でUTC表示） |
 | `events [--date YYYY-MM-DD] [--limit N] [--state] [--utc]` | hooks イベントと畳み込み状態。時刻はローカル（`--utc` で従来のUTC表示） |
-| `serve [--port N] [--open] [--persist-token] [--rotate-token] [--token-file P] [--log-file [P]]` | Live ダッシュボード（127.0.0.1 のみ）。`--persist-token` はトークンを `~/.claude-monitor/token` に保存してURLをブックマーク可能にする（`--rotate-token` と `--token-file` は暗黙に有効化する）。`--log-file` はパス省略で `~/.claude-monitor/serve.log`、指定が無ければログ無し。`url.txt` は永続トークンのときだけ書く |
+| `serve [--port N] [--open] [--persist-token] [--rotate-token] [--token-file P] [--log-file [P]] [--events-keep-days N]` | Live ダッシュボード（127.0.0.1 のみ）。`--persist-token` はトークンを `~/.claude-monitor/token` に保存してURLをブックマーク可能にする（`--rotate-token` と `--token-file` は暗黙に有効化する）。`--log-file` はパス省略で `~/.claude-monitor/serve.log`、指定が無ければログ無し。`url.txt` は永続トークンのときだけ書く。`--events-keep-days` は `~/.claude-monitor/events/<日付>.jsonl` の保持日数（既定 30、`0` で無期限） |
 | `rotate-token [--token-file P] [--port N]` | 保存済みトークンを作り直して `url.txt` を書き直す。**再起動するまで**は古いURL・Cookie の方が通り、新しいURLが403（再起動後に逆転）。ポートは `--port` > `CLAUDE_MONITOR_PORT` > `url.txt` の記録（token ファイルが在るときだけ）> 既定 の順で、既定に落ちたときだけ警告する |
 | `statusline` | statusline sidecar が捉えた rate_limits 等 |
 | `stats <sessionId\|prefix>` | パーサ統計（type別件数・未知type・parse失敗） |
@@ -425,6 +431,8 @@ $env:CLAUDE_MONITOR_IT = "1"; node --test test/integration.test.js
   明言されている。`stats` の「未知type」が増えたら形式変更を疑うこと。
 - Claude Code は古い transcript を自動削除する（実測で30日より古い分が消えた）。
   過去の集計値は永続ではない。
+- `~/.claude-monitor/events/` は既定30日で切られる（上記）。それより前の
+  hook 履歴が必要なら `--events-keep-days` を伸ばすか、自分で退避すること。
 - **サブエージェントの transcript は親より先に消える。** 実測で、hooks が31体を
   知っているセッションのディスク上に7体分しか残っていなかった。Tree ビューは
   そういうエージェントも hooks の証跡だけで描くが、親は特定できないので

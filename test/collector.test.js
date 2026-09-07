@@ -167,6 +167,126 @@ describe('collector: day rollover', () => {
       c.stop();
     }
   });
+
+  test('the day that just ended is still read after the roll, not dropped', async () => {
+    // The regression: activeDates is a Set, so the old trim walked INSERTION
+    // order. A start at 00:30 primes [today, yesterday] in that order, so the
+    // next rollover deleted the day that had just ended and kept the one
+    // before it - and it deleted BEFORE reading, so the last events written
+    // just before midnight were lost for good.
+    const tmp2 = makeTmpDir('cm-roll2');
+    const d = dirs(tmp2.dir);
+    let now = new Date(2026, 8, 3, 0, 30, 0); // start at 00:30 on the 3rd
+    const c = makeCollector(tmp2.dir, { now: () => now });
+    const file = (date) => path.join(d.events, `${localDateKey(date)}.jsonl`);
+    // Something on the 2nd (so it is primed) and on the 3rd.
+    appendJsonl(file(new Date(2026, 8, 2, 23, 0)), [
+      { ...hookLine('SessionStart'), receivedAt: new Date(2026, 8, 2, 23, 0).toISOString() },
+    ]);
+    await c.start();
+    try {
+      assert.deepEqual(c.stats().activeDates, ['2026-09-02', '2026-09-03']);
+      appendJsonl(file(new Date(2026, 8, 3, 12, 0)), [
+        { ...hookLine('UserPromptSubmit'), receivedAt: new Date(2026, 8, 3, 12, 0).toISOString() },
+      ]);
+      now = new Date(2026, 8, 3, 12, 0, 1);
+      c.pollHooks();
+      assert.equal(c.snapshot().sessions[0].phase, 'busy');
+
+      // 23:59:59.800 on the 3rd, written to the 3rd's file, and the clock has
+      // already crossed into the 4th when the next tick runs.
+      const last = new Date(2026, 8, 3, 23, 59, 59, 800);
+      appendJsonl(file(last), [{ ...hookLine('SessionEnd'), receivedAt: last.toISOString(), reason: 'clear' }]);
+      now = new Date(2026, 8, 4, 0, 0, 0, 200);
+      c.pollHooks();
+
+      assert.equal(c.snapshot().sessions[0].phase, 'ended',
+        'the SessionEnd written in the last second of the old day was lost');
+      assert.deepEqual(c.stats().activeDates, ['2026-09-03', '2026-09-04'],
+        'the day that just ended must survive the trim; the older one goes');
+    } finally {
+      c.stop();
+      tmp2.cleanup();
+    }
+  });
+});
+
+describe('collector: events retention', () => {
+  let tmp;
+
+  before(() => { tmp = makeTmpDir('cm-keep'); });
+  after(() => tmp.cleanup());
+
+  /** Write `n` day files ending today, plus one file that is not a day file. */
+  function seedDays(dir, now, n) {
+    const names = [];
+    for (let i = 0; i < n; i++) {
+      const d = new Date(now.getTime() - i * 24 * 3600 * 1000);
+      const name = `${localDateKey(d)}.jsonl`;
+      fs.writeFileSync(path.join(dir, name), '{"receivedAt":"x"}\n', 'utf8');
+      names.push(name);
+    }
+    return names;
+  }
+
+  test('day files past the window are deleted at startup, and only day files', async () => {
+    const root = path.join(tmp.dir, 'prune');
+    const d = dirs(root);
+    const now = new Date(2026, 8, 30, 10, 0, 0);
+    seedDays(d.events, now, 40);
+    // Anything that is not exactly YYYY-MM-DD.jsonl is none of our business.
+    for (const other of ['notes.txt', '2026-09-01.jsonl.bak', 'offsets.json']) {
+      fs.writeFileSync(path.join(d.events, other), 'keep me', 'utf8');
+    }
+    const c = makeCollector(root, { now: () => now, eventsKeepDays: 30 });
+    await c.start();
+    try {
+      const left = fs.readdirSync(d.events).filter((f) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f));
+      assert.equal(left.length, 30, 'exactly the window is kept');
+      assert.equal(left.includes('2026-09-30.jsonl'), true, 'today is kept');
+      assert.equal(left.includes('2026-09-01.jsonl'), true, 'the 30th-newest day is kept');
+      assert.equal(left.includes('2026-08-31.jsonl'), false, 'the day past the window is gone');
+      assert.equal(c.stats().eventFilesDeleted, 10);
+      assert.equal(c.stats().eventsKeepDays, 30);
+      for (const other of ['notes.txt', '2026-09-01.jsonl.bak', 'offsets.json']) {
+        assert.equal(fs.existsSync(path.join(d.events, other)), true, `${other} was deleted`);
+      }
+    } finally {
+      c.stop();
+    }
+  });
+
+  test('crossing midnight prunes again, and 0 turns the whole thing off', async () => {
+    const root = path.join(tmp.dir, 'roll');
+    const d = dirs(root);
+    let now = new Date(2026, 8, 30, 23, 59, 0);
+    seedDays(d.events, now, 5);
+    const c = makeCollector(root, { now: () => now, eventsKeepDays: 3 });
+    await c.start();
+    try {
+      assert.equal(c.stats().eventFilesDeleted, 2);
+      now = new Date(2026, 9, 1, 0, 0, 30);
+      c.pollHooks();
+      // The window moved with the clock: 09-28 was the oldest kept, now it goes.
+      assert.equal(fs.existsSync(path.join(d.events, '2026-09-28.jsonl')), false);
+      assert.equal(fs.existsSync(path.join(d.events, '2026-09-30.jsonl')), true);
+      assert.equal(c.stats().eventFilesDeleted, 3);
+    } finally {
+      c.stop();
+    }
+
+    const root2 = path.join(tmp.dir, 'off');
+    const d2 = dirs(root2);
+    seedDays(d2.events, new Date(2026, 8, 30, 10, 0), 40);
+    const c2 = makeCollector(root2, { now: () => new Date(2026, 8, 30, 10, 0), eventsKeepDays: 0 });
+    await c2.start();
+    try {
+      assert.equal(fs.readdirSync(d2.events).length, 40, '--events-keep-days 0 deletes nothing');
+      assert.equal(c2.stats().eventFilesDeleted, 0);
+    } finally {
+      c2.stop();
+    }
+  });
 });
 
 describe('collector: resilience', () => {
@@ -174,6 +294,33 @@ describe('collector: resilience', () => {
 
   before(() => { tmp = makeTmpDir('cm-resil'); });
   after(() => { tmp.cleanup(); });
+
+  test("a 'change' listener that throws does not take the collector down", async () => {
+    // The debounced emit runs from a setTimeout, which has no catch site above
+    // it: server.js listens with `sse.broadcast('snapshot', ...)`, so a throw
+    // in the broadcast used to become an uncaughtException. Everything the
+    // collector emits now goes through safeTick.
+    const root = path.join(tmp.dir, 'throwing-listener');
+    const d = dirs(root);
+    const c = makeCollector(root, { debounceMs: 0 });
+    let calls = 0;
+    c.on('change', () => { calls += 1; throw new Error('listener exploded'); });
+    await c.start();
+    try {
+      assert.ok(calls >= 1, 'the listener ran');
+      const after = c.counters.tickErrors;
+      assert.ok(after >= 1, 'the failure was counted, not swallowed silently');
+      assert.ok(c.recentErrors.some((e) => e.where === 'tick:emit-change'));
+
+      // ...and the collector keeps working: a new event still lands in state.
+      appendJsonl(path.join(d.events, `${localDateKey(new Date())}.jsonl`), [hookLine('UserPromptSubmit')]);
+      assert.equal(c.pollHooks(), true);
+      assert.equal(c.snapshot().sessions[0].phase, 'busy');
+      assert.ok(c.counters.tickErrors > after, 'the second emit was guarded too');
+    } finally {
+      c.stop();
+    }
+  });
 
   test('a missing events directory is not an error, just nothing to read', async () => {
     const root = path.join(tmp.dir, 'nowhere');

@@ -145,3 +145,68 @@ describe('streamLines', () => {
     assert.equal(r.lineCount, 0);
   });
 });
+
+describe('JsonlTail: a read that fails halfway through', () => {
+  let tmp;
+  before(() => { tmp = makeTmpDir('tail-partial'); });
+  after(() => tmp.cleanup());
+
+  test('offset, pending and lineNo stay in step, and the retry loses nothing', () => {
+    // offset used to be assigned AFTER the chunk loop while pending and lineNo
+    // were assigned inside it. A throw on the second chunk therefore left a
+    // stale offset next to a pending buffer that had already moved on, and the
+    // next read spliced the same bytes into the middle of a line.
+    const file = path.join(tmp.dir, 'partial.jsonl');
+    const lines = [];
+    for (let i = 0; i < 40; i++) lines.push(JSON.stringify({ i, pad: 'x'.repeat(20) }));
+    fs.writeFileSync(file, `${lines.join('\n')}\n`, 'utf8');
+
+    // Chunks small enough that the file needs several of them, and a partial
+    // line straddles every boundary.
+    const tail = new JsonlTail({ chunkSize: 64 });
+    const realRead = fs.readSync;
+    let calls = 0;
+    fs.readSync = (...args) => {
+      calls += 1;
+      if (calls === 2) {
+        const err = new Error('EIO simulated');
+        err.code = 'EIO';
+        throw err;
+      }
+      return realRead(...args);
+    };
+    let first;
+    try {
+      first = tail.read(file);
+    } finally {
+      fs.readSync = realRead;
+    }
+    assert.ok(first.error, 'the failure is reported on the result');
+    assert.equal(first.error.code, 'EIO');
+    assert.ok(first.lines.length >= 1, 'the chunk that DID succeed is still handed back');
+
+    // The retry must produce exactly the rest of the file, in order, with no
+    // duplicated or spliced bytes.
+    const rest = tail.read(file);
+    assert.equal(rest.error, null);
+    assert.deepEqual([...first.lines, ...rest.lines], lines);
+    assert.equal(first.firstLineNo, 1);
+    assert.equal(rest.firstLineNo, first.lines.length + 1);
+    assert.equal(tail.read(file).lines.length, 0, 'and nothing is read twice');
+  });
+
+  test('a failure on the very first chunk still throws', () => {
+    const file = path.join(tmp.dir, 'firstchunk.jsonl');
+    fs.writeFileSync(file, '{"a":1}\n{"a":2}\n', 'utf8');
+    const tail = new JsonlTail({ chunkSize: 8 });
+    const realRead = fs.readSync;
+    fs.readSync = () => { throw new Error('EIO on chunk 1'); };
+    try {
+      assert.throws(() => tail.read(file), /EIO on chunk 1/);
+    } finally {
+      fs.readSync = realRead;
+    }
+    // Nothing was consumed, so the whole file is still there to read.
+    assert.deepEqual(tail.read(file).lines, ['{"a":1}', '{"a":2}']);
+  });
+});

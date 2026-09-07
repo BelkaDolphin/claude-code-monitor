@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HooksIngest, normalizeEvent, foldState, listEventDates, TRACKED_EVENTS } from '../src/hooks-ingest.js';
 import { readSidecars, latestRateLimits, extractRateLimits } from '../src/statusline-sidecar.js';
 import { renderStatusLine } from '../hooks/statusline.js';
@@ -93,6 +93,78 @@ describe('statusline.js', () => {
       session_id: 'NORL', model: { display_name: 'Sonnet' }, context_window: { used_percentage: 42 },
     }), tmp.dir);
     assert.equal(out.trim(), 'Sonnet | ctx 42%');
+  });
+});
+
+describe('a relative CLAUDE_MONITOR_DIR resolves against HOME, not cwd', () => {
+  let tmp;
+  before(() => { tmp = makeTmpDir('relmon'); });
+  after(() => tmp.cleanup());
+
+  /**
+   * Run a script with its own HOME and its own cwd, the way the two sides of
+   * the system really differ: the server is started from wherever the user (or
+   * the logon task) ran it, while Claude Code starts the hook with the PROJECT
+   * as cwd. A cwd-relative value therefore split the two apart and the
+   * dashboard stayed empty forever with nothing to show for it.
+   */
+  function runIn(script, stdin, { home, cwd, monitor }) {
+    return execFileSync(process.execPath, [script], {
+      input: stdin,
+      cwd,
+      env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_MONITOR_DIR: monitor },
+      encoding: 'utf8',
+    });
+  }
+
+  test('src/paths.js resolves it under the home directory', () => {
+    const home = path.join(tmp.dir, 'home1');
+    const cwd = path.join(tmp.dir, 'someproject');
+    for (const d of [home, cwd]) fs.mkdirSync(d, { recursive: true });
+    const probe = path.join(tmp.dir, 'probe.mjs');
+    fs.writeFileSync(probe,
+      "import os from 'node:os';\n"
+      + 'import { monitorDir } from ' + JSON.stringify(pathToFileURL(path.join(ROOT, 'src', 'paths.js')).href) + ';\n'
+      + 'process.stdout.write(JSON.stringify({ dir: monitorDir(), home: os.homedir(), cwd: process.cwd() }));\n',
+      'utf8');
+    const out = JSON.parse(runIn(probe, '', { home, cwd, monitor: 'rel-monitor' }));
+    assert.equal(out.dir, path.join(out.home, 'rel-monitor'));
+    assert.equal(out.dir.startsWith(path.resolve(out.cwd) + path.sep), false,
+      'a relative value must not follow the process that happens to be running');
+  });
+
+  test('the hook writes where the server will look', () => {
+    const home = path.join(tmp.dir, 'home2');
+    const cwd = path.join(tmp.dir, 'project2');
+    for (const d of [home, cwd]) fs.mkdirSync(d, { recursive: true });
+    runIn(HOOK, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'REL1' }),
+      { home, cwd, monitor: 'rel-monitor' });
+    const events = path.join(home, 'rel-monitor', 'events');
+    const dates = listEventDates(events);
+    assert.equal(dates.length, 1, 'the event landed under HOME/rel-monitor');
+    const line = JSON.parse(fs.readFileSync(path.join(events, `${dates[0]}.jsonl`), 'utf8').trim());
+    assert.equal(line.session_id, 'REL1');
+    assert.equal(fs.existsSync(path.join(cwd, 'rel-monitor')), false, 'nothing was written next to cwd');
+  });
+
+  test('the statusline script agrees with both of them', () => {
+    const home = path.join(tmp.dir, 'home3');
+    const cwd = path.join(tmp.dir, 'project3');
+    for (const d of [home, cwd]) fs.mkdirSync(d, { recursive: true });
+    runIn(STATUSLINE, JSON.stringify({ session_id: 'REL2', model: { display_name: 'Opus' } }),
+      { home, cwd, monitor: 'rel-monitor' });
+    assert.equal(fs.existsSync(path.join(home, 'rel-monitor', 'statusline', 'REL2.json')), true);
+    assert.equal(fs.existsSync(path.join(cwd, 'rel-monitor')), false);
+  });
+
+  test('an absolute value is still taken literally', () => {
+    const home = path.join(tmp.dir, 'home4');
+    const abs = path.join(tmp.dir, 'absolute-monitor');
+    for (const d of [home, abs]) fs.mkdirSync(d, { recursive: true });
+    runIn(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'REL3' }),
+      { home, cwd: tmp.dir, monitor: abs });
+    assert.equal(listEventDates(path.join(abs, 'events')).length, 1);
+    assert.equal(fs.existsSync(path.join(home, 'absolute-monitor')), false);
   });
 });
 

@@ -725,6 +725,32 @@ describe('session title stability (browser review 2026-09-03)', () => {
     }
   });
 
+  test('isUsefulTitle is linear, not quadratic, on a hostile title', () => {
+    // The pattern used to end `\s*#?\d*\s*\]?$`, which puts two nullable
+    // whitespace runs next to each other: on a long non-matching string the
+    // engine tried every way of splitting the spaces between them. Measured at
+    // 265ms for 16k characters, and the input is a title read out of a
+    // transcript file, so it is not ours to trust.
+    const hostile = `image${' '.repeat(200000)}x`;
+    const t0 = performance.now();
+    const verdict = isUsefulTitle(hostile);
+    const ms = performance.now() - t0;
+    assert.equal(verdict, true, 'it is not a placeholder, so it is a usable title');
+    assert.ok(ms < 50, `isUsefulTitle took ${ms.toFixed(1)}ms on 200k characters`);
+
+    // The same shape at a length the pattern actually runs on: still linear.
+    const t1 = performance.now();
+    assert.equal(isUsefulTitle(`[  screenshot${'\t'.repeat(150)}z`), true);
+    assert.ok(performance.now() - t1 < 50);
+  });
+
+  test('a long title is useful by definition, but padding does not smuggle one through', () => {
+    assert.equal(isUsefulTitle('a'.repeat(5000)), true);
+    // Trimming happens first, so whitespace padding cannot push a placeholder
+    // past the length cap.
+    assert.equal(isUsefulTitle(`  Image #1${' '.repeat(500)}`), false);
+  });
+
   test('excerpt flattens newlines and caps the length', () => {
     assert.equal(excerpt('a\n\n  b\tc'), 'a b c');
     assert.equal(excerpt(''), null);

@@ -91,6 +91,17 @@ describe('parseLine', () => {
     assert.equal(stats.unknownTypes.size, 0);
   });
 
+  test('an ai-title is bounded: the transcript is not ours to trust', () => {
+    const stats = new ParseStats();
+    const short = parseLine(JSON.stringify({ type: 'ai-title', aiTitle: '普通のタイトル', sessionId: 's' }), 1, { stats });
+    assert.equal(short.aiTitle, '普通のタイトル', 'a normal title is untouched');
+    // A title travels from here into state, the snapshot and every SSE frame,
+    // so an unbounded one would be shipped to every open tab on every change.
+    const huge = parseLine(JSON.stringify({ type: 'ai-title', aiTitle: 'あ'.repeat(50000), sessionId: 's' }), 2, { stats });
+    assert.equal(huge.aiTitle.length, 501);
+    assert.ok(huge.aiTitle.endsWith('…'));
+  });
+
   test('a genuinely unknown type is counted so a format change is visible', () => {
     const stats = new ParseStats();
     parseLine(JSON.stringify({ type: 'brand-new-type-2027', sessionId: 's' }), 1, { stats });
