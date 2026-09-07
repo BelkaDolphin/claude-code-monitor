@@ -1,0 +1,18 @@
+# dependencies (currently none, but just in case)
+node_modules/
+
+# local-rag MCP working data (cwd-relative vector DB and embedding model cache)
+lancedb/
+models/
+
+# screenshots dropped at the project root
+/*.png
+
+# runtime data / logs
+*.log
+.claude-monitor/
+
+# env / OS noise
+.env
+.DS_Store
+Thumbs.db

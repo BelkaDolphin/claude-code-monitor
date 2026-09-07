@@ -1,0 +1,113 @@
+import { test, describe, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { readLiveSessions, isPidAlive, filetimeToEpochMs } from '../src/sessions.js';
+import { makeTmpDir } from './helpers.js';
+
+describe('filetimeToEpochMs', () => {
+  test('converts a Windows FILETIME to epoch ms', () => {
+    // 1970-01-01T00:00:00Z is exactly 116444736000000000 ticks.
+    assert.equal(filetimeToEpochMs('116444736000000000'), 0);
+    // One second later.
+    assert.equal(filetimeToEpochMs('116444736010000000'), 1000);
+  });
+
+  test('the real procStart value lands in a plausible range', () => {
+    // Observed on this machine alongside StartTime 2026-09-02 21:41:51 JST.
+    const ms = filetimeToEpochMs('134328265116630248');
+    const d = new Date(ms);
+    assert.equal(d.getUTCFullYear(), 2026);
+    assert.equal(d.getUTCMonth(), 8); // September
+  });
+
+  test('garbage returns null instead of NaN', () => {
+    assert.equal(filetimeToEpochMs('not-a-number'), null);
+    assert.equal(filetimeToEpochMs(null), null);
+    assert.equal(filetimeToEpochMs('0'), null);
+  });
+});
+
+describe('isPidAlive', () => {
+  test('our own process is alive', () => {
+    assert.equal(isPidAlive(process.pid).alive, true);
+  });
+
+  test('an impossible pid is not alive', () => {
+    assert.equal(isPidAlive(0).alive, false);
+    assert.equal(isPidAlive(-1).alive, false);
+    // 2^31-2 is a valid integer but will not be in use.
+    assert.equal(isPidAlive(2147483646).alive, false);
+  });
+});
+
+describe('readLiveSessions', () => {
+  let tmp;
+  before(() => { tmp = makeTmpDir('sessions'); });
+  after(() => tmp.cleanup());
+
+  test('reads *.json, ignores *.key, and reports liveness', async () => {
+    // Key material must never be opened. If this test ever fails because the
+    // file was read, that is a security regression.
+    fs.writeFileSync(path.join(tmp.dir, '12345.abcdef.key'), 'SECRET-DO-NOT-READ', 'utf8');
+    fs.writeFileSync(path.join(tmp.dir, `${process.pid}.json`), JSON.stringify({
+      pid: process.pid,
+      sessionId: 'live-session',
+      cwd: 'D:\\develop\\Claude監視',
+      startedAt: Date.now(),
+      procStart: '134328265116630248',
+      version: '2.1.258',
+      kind: 'interactive',
+      entrypoint: 'cli',
+      name: 'claude-test',
+      status: 'busy',
+      updatedAt: Date.now(),
+      statusUpdatedAt: Date.now(),
+    }), 'utf8');
+    fs.writeFileSync(path.join(tmp.dir, '2147483646.json'), JSON.stringify({
+      pid: 2147483646, sessionId: 'dead-session', status: 'busy', updatedAt: 1,
+    }), 'utf8');
+
+    const { sessions, skippedKeyFiles } = await readLiveSessions({ dir: tmp.dir, checkProcStart: false });
+    assert.equal(skippedKeyFiles, 1);
+    assert.equal(sessions.length, 2);
+
+    const live = sessions.find((s) => s.sessionId === 'live-session');
+    assert.equal(live.alive, true);
+    assert.equal(live.status, 'busy');
+    assert.equal(live.cwd, 'D:\\develop\\Claude監視', 'Japanese path preserved');
+    assert.ok(Number.isFinite(live.procStartMs));
+
+    const dead = sessions.find((s) => s.sessionId === 'dead-session');
+    assert.equal(dead.alive, false);
+  });
+
+  test('a corrupt session file is skipped, not fatal', async () => {
+    const dir2 = makeTmpDir('sessions2');
+    try {
+      fs.writeFileSync(path.join(dir2.dir, '111.json'), '{ not json', 'utf8');
+      fs.writeFileSync(path.join(dir2.dir, '222.json'), JSON.stringify({ pid: 222, sessionId: 'ok' }), 'utf8');
+      const { sessions } = await readLiveSessions({ dir: dir2.dir, checkProcStart: false });
+      assert.equal(sessions.length, 1);
+      assert.equal(sessions[0].sessionId, 'ok');
+    } finally {
+      dir2.cleanup();
+    }
+  });
+
+  test('a missing sessions dir yields an empty list', async () => {
+    const { sessions } = await readLiveSessions({ dir: path.join(tmp.dir, 'no-such-dir'), checkProcStart: false });
+    assert.deepEqual(sessions, []);
+  });
+
+  test('pid taken from the filename when the json omits it', async () => {
+    const dir3 = makeTmpDir('sessions3');
+    try {
+      fs.writeFileSync(path.join(dir3.dir, '4242.json'), JSON.stringify({ sessionId: 's' }), 'utf8');
+      const { sessions } = await readLiveSessions({ dir: dir3.dir, checkProcStart: false });
+      assert.equal(sessions[0].pid, 4242);
+    } finally {
+      dir3.cleanup();
+    }
+  });
+});

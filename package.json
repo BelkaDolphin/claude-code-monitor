@@ -1,0 +1,15 @@
+{
+  "name": "claude-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code monitoring dashboard - core (M1) + local server and Live view (M2)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "cli": "node src/cli.js",
+    "serve": "node src/cli.js serve"
+  }
+}
