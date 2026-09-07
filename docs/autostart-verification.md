@@ -709,7 +709,7 @@ XML は登録後も残す（`autostart-status` が見せる）。`uninstall-auto
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <UserId>S-1-5-21-1-2-3-1001</UserId>
+      <UserId>S-1-5-21-<redacted>-1001</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>

@@ -18,6 +18,12 @@ Claude Code の稼働状況・サブエージェントツリー・トークン�
 [docs/notify-settings-verification.md](docs/notify-settings-verification.md)、
 稼働数の数え方の修正は [docs/live-count-fix.md](docs/live-count-fix.md) を参照。
 
+着手前の M0 調査メモ（公式ドキュメントの読み込みと、手元の実データでの裏取り）は
+[docs/m0-docs-findings.md](docs/m0-docs-findings.md) と
+[docs/m0-local-findings.md](docs/m0-local-findings.md)。
+[docs/reference/usage_agg_v2.js](docs/reference/usage_agg_v2.js) は
+その裏取りに使った**参考スクリプトで、本体とは無関係**（実行されないし、テストもされない）。
+
 ## 必要環境
 
 - Node.js 20 以上（検証環境: v24.13.0）
@@ -52,7 +58,7 @@ node src/cli.js serve --port 8899
 起動すると**トークン付きのURLが1行だけ標準出力に出る**。
 
 ```
-http://127.0.0.1:47321/?t=3bcce684……（64桁のhex）
+http://127.0.0.1:47321/?t=13131313……（64桁のhex）
 ```
 
 1. そのURLをブラウザで一度だけ開く。
@@ -157,6 +163,16 @@ GET / HEAD 以外は 405。`/api/usage` は結果を `<monitorDir>/usage/daily.j
 - 守っている脅威は「同じブラウザで開いている他のサイトからのクロスサイト要求」と
   DNS リバインディング。トークン（Cookie）に加えて `Host` / `Origin` /
   `Sec-Fetch-Site` を検証し、静的ファイルにも同じ検査をかける。
+- **守っている境界は「ユーザーアカウント」まで。** `--persist-token` で保存される
+  トークンとダッシュボードURLは、**同じユーザーアカウントで動く任意のプロセスから
+  読める**（ファイルの ACL はそのユーザー自身を締め出せない）。このツールが守るのは
+  ユーザーアカウントの境界と、ブラウザ経由の他オリジンからのアクセスであって、
+  **同一ユーザ内で動く悪意あるプロセスは守らない**。それを脅威に含めるなら、
+  そのプロセスは `~/.claude` 自体も読めるので、守るべき対象はこのツールではない。
+- **既知の制約: 既定ポート（47321）が固定である。** 先に同じポートを取った偽サーバが
+  居ると、ブックマークした起動URLを開いた時点で `?t=<token>` をそちらに渡してしまう。
+  同一ユーザ内のプロセスに限る話（上記の境界の外）だが、ポートを固定にした代償として
+  明記しておく。心配なら `--port` を毎回変え、URLはブックマークせずに使い捨てにすること。
 - **起動URLは共有しない。** それが唯一の資格情報で、画面には他人に見せたくない
   作業ディレクトリ・セッション名・コスト・枠残量が出る。
   スクリーンショットを撮るならアドレスバーを入れない。
@@ -403,7 +419,7 @@ node src/cli.js <command> [options]
 | `tray-stop [--port N] [--dry-run]` | トレイホスト（とそれが見ているサーバ）を停止する。まず行儀よく頼み、駄目なら `taskkill /T /F`。生死は **プロセステーブル** で判定し、両方消えたときだけ `tray.pid` を消す。残っていれば残ったPIDを出して **終了コード1**（`--port` は `tray.pid` にポートが無いときの予備）。Windows 専用 |
 | `paths` | 解決済みパス一覧 |
 
-`<sessionId>` は先頭一致のprefixでよい（例: `ea1b82f5`）。曖昧な場合は候補を表示する。
+`<sessionId>` は先頭一致のprefixでよい（例: `11111111`）。曖昧な場合は候補を表示する。
 
 ### 使用例
 
@@ -412,17 +428,17 @@ node src/cli.js <command> [options]
 node src/cli.js list --days 7
 
 # サブエージェントツリー
-node src/cli.js tree ea1b82f5
+node src/cli.js tree 11111111
 
 # 日付別使用量を ccusage と突合（当日分は進行中なので差が出るのが正常）
 # 事前に npm i -g ccusage@20.0.20 が必要。無ければダウンロードせずに失敗する
 node src/cli.js usage --daily --since 2026-08-14 --compare-ccusage
 
 # エラーになったツール呼び出しだけ
-node src/cli.js tools ea1b82f5 --errors
+node src/cli.js tools 11111111 --errors
 
 # パーサが未知のレコードtypeに遭遇していないか確認
-node src/cli.js stats ea1b82f5
+node src/cli.js stats 11111111
 ```
 
 ## テスト

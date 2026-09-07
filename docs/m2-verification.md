@@ -58,7 +58,7 @@ $ CLAUDE_MONITOR_IT=1 node --test test/integration.test.js
 ### 2.1 起動
 
 ```
-stdout: http://127.0.0.1:47399/?t=3bcce684……（64桁hex、以下伏せる）
+stdout: http://127.0.0.1:47399/?t=13131313……（64桁hex、以下伏せる）
 stderr: claude-monitor serving on 127.0.0.1:47399 (loopback only)
         open the URL above once; it sets a cookie and the token leaves the address bar.
         do NOT share the URL - it is the only credential.
@@ -121,7 +121,7 @@ $ curl -s -o NUL -w '%{http_code}' -H 'Cookie: <valid>' --path-as-is .../../pack
   },
   "sessions": [
     {
-      "sessionId": "ea1b82f5-5a07-4d1d-9920-479d8cece715",
+      "sessionId": "11111111-2222-4333-8444-555555555555",
       "title": "Claude監視",
       "cwd": "D:\\develop\\Claude監視",
       "pid": 29340,
@@ -139,14 +139,14 @@ $ curl -s -o NUL -w '%{http_code}' -H 'Cookie: <valid>' --path-as-is .../../pack
         "name": "Bash",
         "toolUseId": "toolu_01GjeR2N46TeNTjuZHepf5KF",
         "since": "2026-09-02T14:56:48.462Z",
-        "agentId": "a25952fdd8897146a"
+        "agentId": "a3a3a3a3a3a3a3a3a"
       },
       "toolCount": 9,
       "activeAgents": 2,
       "agents": [
-        { "agentId": "a25952fdd8897146a", "agentType": "general-purpose",
+        { "agentId": "a3a3a3a3a3a3a3a3a", "agentType": "general-purpose",
           "status": "running", "tools": 75, "startedAt": "2026-09-02T14:34:48.208Z", "endedAt": null },
-        { "agentId": "a458ad0670a1f500e", "agentType": null,
+        { "agentId": "a1a1a1a1a1a1a1a1a", "agentType": null,
           "status": "running", "tools": 1, "startedAt": "2026-09-02T14:39:42.411Z", "endedAt": null }
       ],
       "notifications": [
@@ -241,7 +241,7 @@ events for 2026-09-02 (available: 2026-09-02)
 
 TIME          EVENT        SESSION   AGENT     DETAIL
 ------------  -----------  --------  --------  ------
-23:50:20.465  PreToolUse   ea1b82f5  a25952fd  Edit
+23:50:20.465  PreToolUse   11111111  a3a3a3a3  Edit
 ```
 
 `--utc` を付けると従来どおり `TIME(UTC)` 列で `14:50:20.465` になる。
@@ -263,14 +263,14 @@ TIME          EVENT        SESSION   AGENT     DETAIL
    さらに `SubagentStop` の `agent_type` は**空文字列 `""`** で届く:
 
    ```json
-   {"hookEventName":"SubagentStop","agent_id":"ae74cfa26dd4e40b3","agent_type":"",
-    "agent_transcript_path":"...\\subagents\\agent-ae74cfa26dd4e40b3.jsonl", ...}
+   {"hookEventName":"SubagentStop","agent_id":"a5a5a5a5a5a5a5a5a","agent_type":"",
+    "agent_transcript_path":"...\\subagents\\agent-a5a5a5a5a5a5a5a5a.jsonl", ...}
    ```
 
    一方 `SubagentStart` にはちゃんと入る:
 
    ```json
-   {"hookEventName":"SubagentStart","agent_id":"a25952fdd8897146a",
+   {"hookEventName":"SubagentStart","agent_id":"a3a3a3a3a3a3a3a3a",
     "agent_type":"general-purpose", ...}
    ```
 
@@ -296,8 +296,8 @@ TIME          EVENT        SESSION   AGENT     DETAIL
 4. **transcript の `ai-title` レコードの形は
    `{"type":"ai-title","aiTitle":"…","sessionId":"…"}`** で、`timestamp` を持たない。
    M1 の parser は `type` を数えるだけで値を拾っていなかったので `aiTitle` を足した。
-   現行セッション（ea1b82f5）には ai-title が1件も無く、タイトルは cwd 末尾の
-   「Claude監視」にフォールバックしている。別セッション 675247e9 には
+   現行セッション（11111111）には ai-title が1件も無く、タイトルは cwd 末尾の
+   「Claude監視」にフォールバックしている。別セッション dddddddd には
    `"aiTitle":"Claude Code監視システム"` が実在する。
 
 5. **`readLiveSessions` の既定 `checkProcStart:true` は PowerShell を spawn する。**
@@ -480,18 +480,18 @@ $ curl -o NUL -w '%{http_code}' -I -H 'Cookie: <valid>' .../api/stream
 
 ### 7.1 幽霊エージェント（最重要）
 
-**症状**: AGENTS に `▶ a458ad06 1h 13m 1 tools` が実行中として残り、
+**症状**: AGENTS に `▶ a1a1a1a1 1h 13m 1 tools` が実行中として残り、
 ヘッダの「エージェント」もそれを数えていた。
 
 **実データの確認**（`%USERPROFILE%\.claude-monitor\events\2026-09-02.jsonl`）:
 
 ```
-2026-09-02T14:39:42.411Z PreToolUse   agent_id=a458ad0670a1f500e tool_name=Bash
-2026-09-02T14:56:54.199Z PostToolUse  agent_id=a458ad0670a1f500e
+2026-09-02T14:39:42.411Z PreToolUse   agent_id=a1a1a1a1a1a1a1a1a tool_name=Bash
+2026-09-02T14:56:54.199Z PostToolUse  agent_id=a1a1a1a1a1a1a1a1a
 ```
 
 - `SubagentStart` **なし**、`SubagentStop` **なし**、`subagents/` に
-  `agent-a458ad06...` のファイルも `meta.json` も**なし**。
+  `agent-a1a1a1a1...` のファイルも `meta.json` も**なし**。
 - **報告と1点違った**: 依頼文には「PostToolUse も無く」とあったが、実際には
   **17分12秒後に PostToolUse が届いている**。つまりツールは正常に終わっており、
   欠けているのはエージェントのライフサイクル・イベントだけだった。
@@ -537,7 +537,7 @@ meta は `session-index.listSubagents()` が既に読んでいるので、
 実データでの効果:
 
 ```
-before: ▶ a25952fd
+before: ▶ a3a3a3a3
 after : ▶ Implement M2 server and Live view（general-purpose）  Opus
 ```
 
@@ -568,9 +568,9 @@ after : ▶ Implement M2 server and Live view（general-purpose）  Opus
 
 ```
 $ grep -o '"type":"ai-title"[^}]*}' <session>.jsonl | tail -3
-"type":"ai-title","aiTitle":"Image #1","sessionId":"ea1b82f5-..."
-"type":"ai-title","aiTitle":"Image #1","sessionId":"ea1b82f5-..."
-"type":"ai-title","aiTitle":"Image #1","sessionId":"ea1b82f5-..."
+"type":"ai-title","aiTitle":"Image #1","sessionId":"11111111-..."
+"type":"ai-title","aiTitle":"Image #1","sessionId":"11111111-..."
+"type":"ai-title","aiTitle":"Image #1","sessionId":"11111111-..."
 ```
 
 つまり ai-title は最新プロンプトから再生成されており、添付だけの
@@ -609,20 +609,20 @@ meta が必ず勝つ。transcript 由来の値が meta を上書きすること�
 "counts": { "total": 1, "live": 1, "waiting": 1, "agentsRunning": 1 },
 "stats":  { "toolTimeouts": 1, "agentsStale": 1, "errorCount": 0 },
 "title":  "Claude監視",
-"lastPrompt": "サブエージェントがどのモデルで動いてるかも載せて…",
+"lastPrompt": "（プロンプト本文は省略）",
 "agents": [
-  { "agentId": "a458ad0670a1f500e", "label": "a458ad06",
+  { "agentId": "a1a1a1a1a1a1a1a1a", "label": "a1a1a1a1",
     "status": "stale", "statusSource": "inferred", "staleReason": "silent" },
-  { "agentId": "a25952fdd8897146a",
+  { "agentId": "a3a3a3a3a3a3a3a3a",
     "label": "Implement M2 server and Live view（general-purpose）",
     "model": "opus", "modelSource": "meta",
     "status": "running", "statusSource": "hooks" }
 ]
 ```
 
-- **幽霊 `a458ad06` は `running` ではなくなった**（`stale` / 推定）。
+- **幽霊 `a1a1a1a1` は `running` ではなくなった**（`stale` / 推定）。
 - `agentsRunning` は **0 ではなく 1** だが、残っている1件は
-  `a25952fdd8897146a` ＝ **この作業を実行しているエージェント本人**で、
+  `a3a3a3a3a3a3a3a3a` ＝ **この作業を実行しているエージェント本人**で、
   実際に稼働中である。幽霊だけが消え、本物は残るという期待どおりの結果。
 - タイトルは ai-title が `Image #1` のままでも `Claude監視` で安定している。
 - `errorCount` は 0（推定は失敗ではないので加算されない）。
@@ -667,7 +667,7 @@ meta が必ず勝つ。transcript 由来の値が meta を上書きすること�
   実機で一度見ること。
 - **通知の実挙動（Web Notifications）は未検証。**
 - **`SubagentStart`/`Stop` が飛ばない経路が存在する。** 第7.1章の
-  `a458ad0670a1f500e` がその実例で、いまは時間による推定で処理している。
+  `a1a1a1a1a1a1a1a1a` がその実例で、いまは時間による推定で処理している。
   Claude Code 側の条件（推測: 孫エージェント）を特定できれば、
   推定ではなく事実で判定できる。
 - 死んだ PID の `sessions/<pid>.json` が残るのかは M1 から持ち越しのまま。

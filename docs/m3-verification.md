@@ -25,7 +25,7 @@ M2 までの **316件は全て pass のまま**。M3 で 103件追加した
 
 | ファイル | 件数 | 内容 |
 |---|---|---|
-| `test/tree-merge.test.js`（新規） | 40 | 3源のマージ規則を1つずつ固定。status の優先順位（hooks > stale推定 > jsonl推定、ただし `tool_result` の事実は stale 推定に負けない）、`agent_type: ""` を絶対に採用しないこと、agentType/description/model の meta > hooks > transcript、startedAt の hooks > 子jsonl > 起動 tool_use、endedAt が「終了扱いのときだけ」transcript から来ること、負の所要時間・パース不能な時刻が null になること、startedAt 昇順（null は最後）、深さ2のネスト、親不明の orphan、**hooks にしか存在しないエージェント**（`a458ad0670a1f500e` の再現）、ルートのタイトル規則（プレースホルダ拒否）、トークン名の写像、`mergeTree()` を引数なしで呼んでも落ちないこと |
+| `test/tree-merge.test.js`（新規） | 40 | 3源のマージ規則を1つずつ固定。status の優先順位（hooks > stale推定 > jsonl推定、ただし `tool_result` の事実は stale 推定に負けない）、`agent_type: ""` を絶対に採用しないこと、agentType/description/model の meta > hooks > transcript、startedAt の hooks > 子jsonl > 起動 tool_use、endedAt が「終了扱いのときだけ」transcript から来ること、負の所要時間・パース不能な時刻が null になること、startedAt 昇順（null は最後）、深さ2のネスト、親不明の orphan、**hooks にしか存在しないエージェント**（`a1a1a1a1a1a1a1a1a` の再現）、ルートのタイトル規則（プレースホルダ拒否）、トークン名の写像、`mergeTree()` を引数なしで呼んでも落ちないこと |
 | `test/tree-api.test.js`（新規） | 46 | 合成した projects ツリーと events で実サーバを起動。ID の厳格検証（UUID / 17桁hex）、`clampInt`、新3ルートにも Cookie・Origin・Host・Sec-Fetch-Site が効くこと、POST が 405、HEAD に本文が無いこと、`days` のクランプと**稼働セッションが期間で消えないこと**、ネストと3源マージの実際の出力、`?agent=` の絞り込みと `main`、`limit` のクランプと**末尾**が返ること、不正IDと未知IDが同じ 404 JSON であること、キャッシュのフィンガープリント（本体・サブエージェント・meta数のどれが動いても変わる／並び順では変わらない）、LRU の追い出し、`toolUseIndex` を捨ててからキャッシュしていること、ツールログの遅延生成、索引の TTL、`HookHistory` の畳み込みと欠損ディレクトリ耐性、**ツリー生成で例外が出ても 500 JSON を返してサーバは生き続けること**、後から書かれた meta.json が索引の再構築を待たずに反映されること、**配下のファイルが消えても 200 を返しサーバが生き続けること**（8.1 / 8.2） |
 | `test/server.test.js`（追記） | +17 | 配信された HTML に3ペインの id が揃い、プレースホルダが消えていること、クライアントが3エンドポイントだけを叩くこと、2秒デバウンス＋「見えているタブだけ」更新、`<ul>/<li>` と `aria-expanded` の実体、推定を事実として描かないこと（`?`/「終了と推定」/「無音からの推定」/`FIELD_SOURCE_LABEL`）、構造が変わった時だけ DOM を組み直すこと、localStorage が try/catch で包まれタブ・セッション・期間が復元されること、Live カードの Tree ボタン、**インラインscript/style/ハンドラと禁止DOMシンクが無いこと**、CSS が外部を一切参照しないこと、配色規律（アンバーは要対応のみ）、Tree ボタンが一覧を二重取得しないこと、デバウンス発火時にもタブの可視判定をすること（8.3 / 8.4） |
 
@@ -77,19 +77,19 @@ M2 の第4章1項「サブエージェントの種類と開始時刻を確実に
 
 ### 2.3 新発見: SubagentStop があるのに transcript が消えているエージェントがある
 
-セッション `ea1b82f5` を実データで開いたところ、hooks は **31体**のエージェントを
+セッション `11111111` を実データで開いたところ、hooks は **31体**のエージェントを
 知っているのに `subagents/` には **7体**分のファイルしか無い。差分の30体は全て
 `SubagentStop` を出しており、そのイベントは `agent_transcript_path` まで持っている:
 
 ```
-SubagentStop agent=afc4633feea1e4761 session=ea1b82f5-... type="" 
-             tp=...\ea1b82f5-...\subagents\agent-afc4633feea1e4761.jsonl
+SubagentStop agent=a2a2a2a2a2a2a2a2a session=11111111-... type="" 
+             tp=...\11111111-...\subagents\agent-a2a2a2a2a2a2a2a2a.jsonl
 ```
 
 ```
-$ ls ~/.claude/projects/D--develop-Claude--/ea1b82f5-.../subagents/agent-afc4633feea1e4761.jsonl
+$ ls ~/.claude/projects/D--develop-Claude--/11111111-.../subagents/agent-a2a2a2a2a2a2a2a2a.jsonl
 No such file or directory
-$ find ~/.claude/projects -name "agent-afc4633feea1e4761*"      # 全projects を検索
+$ find ~/.claude/projects -name "agent-a2a2a2a2a2a2a2a2a*"      # 全projects を検索
 （0件）
 ```
 
@@ -103,14 +103,14 @@ transcript は残っている）。既知の制約7「30日で消える」とは
 UI は既定で閉じた `<details>`（「親が特定できないエージェント」）に入れる ——
 30体をツリー本体に混ぜると実際の親子関係が読めなくなるため。
 
-### 2.4 幽霊エージェント `a458ad0670a1f500e` の描画
+### 2.4 幽霊エージェント `a1a1a1a1a1a1a1a1a` の描画
 
 M2 第7.1章で見つけた、`PreToolUse` と `PostToolUse` が1件ずつだけで
 `SubagentStart` も `SubagentStop` も `meta.json` も transcript も無いエージェント。
 実サーバ経由での出力:
 
 ```
-ghost a458ad0670a1f500e:
+ghost a1a1a1a1a1a1a1a1a:
   status=stale  statusSource=inferred  statusDetail=session-over
   origin=hooks  startedAt=2026-09-02T14:39:42.411Z  transcriptPath=null
   toolCount=1（toolCountSource=hooks）
@@ -124,7 +124,7 @@ ghost a458ad0670a1f500e:
 
 ### 2.5 セッションタイトル
 
-`ea1b82f5` の transcript には `{"type":"ai-title","aiTitle":"Image #1"}` が
+`11111111` の transcript には `{"type":"ai-title","aiTitle":"Image #1"}` が
 最後に書かれている（M2 第7.6章）。ツリーのルートも Live と同じ
 `state.isUsefulTitle()` で弾き、cwd 末尾の `Claude監視` に落ちることを実データで確認した。
 
@@ -138,11 +138,11 @@ ghost a458ad0670a1f500e:
 
 | セッション | サイズ | ファイル数 | `buildTree` | `buildToolLog` | ノード | ツール呼び出し |
 |---|---|---|---|---|---|---|
-| `d1c5d494` | 34.2 MB | 18 | **248 ms** | 208 ms | 18 | 3000 |
-| `1f91c036` | 21.9 MB | 13 | 131 ms | 130 ms | 13 | 1967 |
-| `81626617` | 21.7 MB | 20 | 137 ms | 143 ms | 20 | 1788 |
-| `ea1b82f5` | 9.2 MB | 8 | 49 ms | 49 ms | 8 | 661 |
-| `dd79b43f` | 7.4 MB | 4 | 46 ms | 44 ms | 4 | 720 |
+| `99999999` | 34.2 MB | 18 | **248 ms** | 208 ms | 18 | 3000 |
+| `aaaaaaaa` | 21.9 MB | 13 | 131 ms | 130 ms | 13 | 1967 |
+| `22222222` | 21.7 MB | 20 | 137 ms | 143 ms | 20 | 1788 |
+| `11111111` | 9.2 MB | 8 | 49 ms | 49 ms | 8 | 661 |
+| `bbbbbbbb` | 7.4 MB | 4 | 46 ms | 44 ms | 4 | 720 |
 
 **最大でも 0.25 秒**で、計画時に懸念した「1〜2秒イベントループを止める」には
 ならなかった。したがって worker_threads は入れていない（同期 + キャッシュのまま）。
@@ -151,8 +151,8 @@ ghost a458ad0670a1f500e:
 
 | 対象 | 初回 | 2回目 |
 |---|---|---|
-| `ea1b82f5`（9.2 MB / 8ファイル） | 68 ms（うちパース 63 ms） | **2 ms**（キャッシュ命中） |
-| `d1c5d494`（34.2 MB / 18ファイル） | 251 ms（うちパース 206 ms） | - |
+| `11111111`（9.2 MB / 8ファイル） | 68 ms（うちパース 63 ms） | **2 ms**（キャッシュ命中） |
+| `99999999`（34.2 MB / 18ファイル） | 251 ms（うちパース 206 ms） | - |
 | `/api/sessions`（66セッション） | 100 ms（索引構築込み） | 索引はTTL 2秒で再利用 |
 
 ### 3.3 補助的な読み取り
@@ -283,10 +283,10 @@ Web UI は `async-unknown` と表示してしまう（実際にそうなった�
 $ node src/cli.js list --days 3
 5 session(s) within 3 day(s); 61 older skipped; 30 project dir(s)  [times: local Asia/Tokyo]
 SESSION   MODIFIED               KB  SUBS  ...
-b5824c60  2026-09-03 19:02:28   233     1  ...
+33333333  2026-09-03 19:02:28   233     1  ...
 
-$ node src/cli.js tools ea1b82f5 --limit 3
-session ea1b82f5-...: 661 tool call(s), 15 error(s), 0 pending  [times: local Asia/Tokyo]
+$ node src/cli.js tools 11111111 --limit 3
+session 11111111-...: 661 tool call(s), 15 error(s), 0 pending  [times: local Asia/Tokyo]
 TIME      TOOL   STATUS    MS  AGENT   INPUT
 01:10:45  Bash   ok      4988  (main)  cd "D:/develop/Claude監視" && npm test ...
 ```
@@ -302,23 +302,23 @@ TIME      TOOL   STATUS    MS  AGENT   INPUT
 ```
 port 47399 free before start: true
 OK   403 without cookie /api/sessions
-OK   403 without cookie /api/tree/ea1b82f5-...
-OK   403 without cookie /api/tools/ea1b82f5-...
+OK   403 without cookie /api/tree/11111111-...
+OK   403 without cookie /api/tools/11111111-...
 OK   token exchange 302 + cookie
 OK   /api/sessions 200            100ms count=66 days=30
-     live first: b5824c60(live) ea1b82f5 e2a7ec22
+     live first: 33333333(live) 11111111 44444444
 OK   days clamped low / high / default        (0→1, 9999→90, bogus→30)
 OK   /api/tree nested 200         cold=68ms(parse 63ms) warm=2ms cached=true
      title=Claude監視 agents=37 hooksOnly=30 orphans=30
-       - a04d1504b8 [async-unknown/jsonl:async_launched] M0 local data verification（general-purpose） sonnet
-       - af97eb64c6 [async-unknown/jsonl:async_launched] M0 official docs verification（general-purpose） sonnet
-       - a4d8ef6226 [async-unknown/jsonl:async_launched] Implement M1 core modules（general-purpose） opus
-       - a5b6b7f8ed [async-unknown/jsonl:async_launched] Review M1 core implementation（feature-dev:code-reviewer） sonnet
-       - a795e2824a [async-unknown/jsonl:async_launched] Security review of M2 server（feature-dev:code-reviewer） sonnet
-       - a25952fdd8 [completed/hooks:SubagentStop] Implement M2 server and Live view（general-purpose） opus 893s
-         - a68ec5b2f7 [async-unknown/jsonl:async_launched] Review M2 code（feature-dev:code-reviewer） claude-sonnet-5
-OK   ghost a458ad0670a1f500e rendered  status=stale/inferred:session-over origin=hooks
-OK   /api/tree biggest 200        d1c5d494 34.2MB files=18 http=251ms parse=206ms agents=17
+       - afafafafaf [async-unknown/jsonl:async_launched] M0 local data verification（general-purpose） sonnet
+       - a6a6a6a6a6 [async-unknown/jsonl:async_launched] M0 official docs verification（general-purpose） sonnet
+       - a4a4a4a4a4 [async-unknown/jsonl:async_launched] Implement M1 core modules（general-purpose） opus
+       - b3b3b3b3b3 [async-unknown/jsonl:async_launched] Review M1 core implementation（feature-dev:code-reviewer） sonnet
+       - b2b2b2b2b2 [async-unknown/jsonl:async_launched] Security review of M2 server（feature-dev:code-reviewer） sonnet
+       - a3a3a3a3a3 [completed/hooks:SubagentStop] Implement M2 server and Live view（general-purpose） opus 893s
+         - b1b1b1b1b1 [async-unknown/jsonl:async_launched] Review M2 code（feature-dev:code-reviewer） claude-sonnet-5
+OK   ghost a1a1a1a1a1a1a1a1a rendered  status=stale/inferred:session-over origin=hooks
+OK   /api/tree biggest 200        99999999 34.2MB files=18 http=251ms parse=206ms agents=17
 OK   /api/tools agent-scoped      total=58 allAgents=661 first=Bash
 OK   /api/tools limit clamp / bad agent 404
 OK   bogus session id 404 / unknown uuid 404 json
@@ -330,8 +330,8 @@ OK   / serves the dashboard
 port 47399 free after stop: true
 ```
 
-ネストが1段（`a25952fdd8` → `a68ec5b2f7`）実データで正しく描けている。
-`a25952fdd8` だけが `completed/hooks:SubagentStop` なのは、他の5体の `SubagentStop` が
+ネストが1段（`a3a3a3a3a3` → `b1b1b1b1b1`）実データで正しく描けている。
+`a3a3a3a3a3` だけが `completed/hooks:SubagentStop` なのは、他の5体の `SubagentStop` が
 届いていないため（M2 第4章1項の「終わりを落とす」がそのまま出ている）。
 
 ---
@@ -467,7 +467,7 @@ $ npm test
 
 実サーバのスモーク（自前ポート 47403、ユーザのサーバには非接触）も再実行し、
 全項目 OK・ポート解放まで確認した。実測値は変わらず
-（`ea1b82f5` cold 68ms / warm 4ms、34.2MB の `d1c5d494` が HTTP 264ms・パース 210ms）。
+（`11111111` cold 68ms / warm 4ms、34.2MB の `99999999` が HTTP 264ms・パース 210ms）。
 ---
 
 ## 9. ブラウザ確認後の表示修正（2026-09-03）
@@ -481,7 +481,7 @@ Playwright（playwright-core + `channel:'chrome'`、ヘッドレス）で Tree �
 ### 9.1 hooks のみのエージェント行に裸の `0` が出ていた
 
 transcript を持たないエージェント（6.3）はトークンもツール数も 0 なので、
-`√ afc4633f 0` のように**数値ではなく「はぐれた文字」**に見えていた。
+`√ a2a2a2a2 0` のように**数値ではなく「はぐれた文字」**に見えていた。
 
 **修正**: トークンが 0／不明ならセルごと空にする
 （`n.tokens && n.tokens.total ? … : ''`。ツール数は元から 0 で空だった）。
@@ -517,7 +517,7 @@ transcript を持たないエージェント（6.3）はトークンもツール
 [03] marks=["■=セッション","✓=完了","~=完了不明"]  untitled=0
 [07] orphan bare-zero cells=0
 [07] 先頭の orphan 行:
-     glyph="?" title="終了と推定" label="a458ad06"
+     glyph="?" title="終了と推定" label="a1a1a1a1"
      class="tnode__label tnode__label--id" font="Cascadia Mono" fontStyle="normal"
      tok=""  tools="1 tools"
 [console] none      （undefined / NaN / Invalid Date の文字列も0件）

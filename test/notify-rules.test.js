@@ -372,6 +372,103 @@ describe('evaluateQuota', () => {
   });
 });
 
+/*
+ * The bug: the page evaluated the rule on every snapshot, including while it
+ * could not show anything (master switch off, permission not granted, or quiet
+ * because the tab was focused). `fired` was set for a crossing nobody saw, and
+ * the window then stayed silent until resets_at rolled over - up to a week for
+ * seven_day. Silence has to leave the arm state alone.
+ */
+describe('evaluateQuota: allowed = false freezes the arm state', () => {
+  const on = () => R.defaults();
+
+  test('nothing fires and the state comes back identical', () => {
+    const s = on();
+    const st = R.evaluateQuota(limits({ used_percentage: 10, resets_at: 1 }), {}, s, false).armed;
+    const r = R.evaluateQuota(limits({ used_percentage: 99, resets_at: 1 }), st, s, false, false);
+    assert.deepEqual(r.fire, []);
+    assert.equal(r.armed, st, 'the very same object should come back');
+    assert.equal(r.armed.five_hour.fired, false, 'the crossing must not be consumed');
+  });
+
+  test('the crossing still fires on the first snapshot that IS allowed', () => {
+    const s = on();
+    let st = R.evaluateQuota(limits({ used_percentage: 10, resets_at: 1 }), {}, s, false).armed;
+    // Three snapshots over the threshold while nothing can be shown.
+    for (let i = 0; i < 3; i++) {
+      st = R.evaluateQuota(limits({ used_percentage: 91 + i, resets_at: 1 }), st, s, false, false).armed;
+    }
+    const r = R.evaluateQuota(limits({ used_percentage: 94, resets_at: 1 }), st, s, false, true);
+    assert.equal(r.fire.length, 1);
+    assert.equal(r.fire[0].window, 'five_hour');
+  });
+
+  test('an empty state stays empty rather than becoming primed', () => {
+    const r = R.evaluateQuota(limits({ used_percentage: 99, resets_at: 1 }), {}, on(), true, false);
+    assert.deepEqual(r.armed, {});
+    assert.deepEqual(r.fire, []);
+  });
+
+  test('only the literal false freezes it - omitted or true evaluates', () => {
+    const s = on();
+    const over = limits({ used_percentage: 99, resets_at: 1 });
+    assert.equal(R.evaluateQuota(over, {}, s, false).fire.length, 1, 'omitted');
+    assert.equal(R.evaluateQuota(over, {}, s, false, true).fire.length, 1, 'true');
+    assert.equal(R.evaluateQuota(over, {}, s, false, undefined).fire.length, 1, 'undefined');
+    assert.equal(R.evaluateQuota(over, {}, s, false, false).fire.length, 0, 'false');
+  });
+});
+
+/*
+ * The bug: the page walked the list looking for the id it last reacted to and
+ * fell back to index 0 when it was not there. The server keeps only the last 20
+ * notifications per session, so an id can simply be gone - and then a single
+ * snapshot replayed up to twenty notifications at once.
+ */
+describe('nextNotificationStart', () => {
+  const list = (...ns) => ns.map((n) => ({ id: `s#${n}`, type: 'idle_prompt' }));
+
+  test('a session we have never seen announces only its newest entry', () => {
+    assert.equal(R.nextNotificationStart(list(1, 2, 3), undefined), 2);
+  });
+
+  test('a known session that had nothing to say announces all of it', () => {
+    assert.equal(R.nextNotificationStart(list(1, 2, 3), null), 0);
+    assert.equal(R.nextNotificationStart(list(1, 2, 3), ''), 0);
+  });
+
+  test('the usual case starts just after the id we remember', () => {
+    assert.equal(R.nextNotificationStart(list(1, 2, 3, 4), 's#2'), 2);
+    assert.equal(R.nextNotificationStart(list(1, 2, 3, 4), 's#4'), 4, 'nothing new');
+  });
+
+  test('an id pushed out of the ring announces one entry, not twenty', () => {
+    const ring = list(21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+      31, 32, 33, 34, 35, 36, 37, 38, 39, 40);
+    assert.equal(R.nextNotificationStart(ring, 's#7'), ring.length - 1);
+  });
+
+  test('a server restart (the counter back to 1) also announces one entry', () => {
+    // The old id is numerically ahead of everything in the fresh list.
+    assert.equal(R.nextNotificationStart(list(1, 2, 3), 's#57'), 2);
+  });
+
+  test('an empty list has nothing to announce, whatever we remember', () => {
+    for (const seen of [undefined, null, 's#9']) {
+      assert.equal(R.nextNotificationStart([], seen), 0);
+    }
+  });
+
+  test('garbage arguments do not throw', () => {
+    for (const bad of [null, undefined, 'x', 3, {}]) {
+      assert.doesNotThrow(() => R.nextNotificationStart(bad, bad));
+      assert.equal(R.nextNotificationStart(bad, bad), 0);
+    }
+    // A list whose entries are not objects must not match anything.
+    assert.equal(R.nextNotificationStart([null, undefined, 'x'], 's#1'), 2);
+  });
+});
+
 describe('the shipped rules file obeys the front-end rules', () => {
   test('no forbidden DOM sink and no external reference', () => {
     for (const re of [

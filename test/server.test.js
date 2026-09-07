@@ -1163,6 +1163,16 @@ describe('M3: the tree view the server actually hands out', () => {
     assert.match(css, /\.tnode__btn \.tnode__label--id \{[^}]*font-style: normal;/);
   });
 
+  test('a failed tool fetch can be retried by picking the node again', () => {
+    // `tree.detailToolsFor` doubles as the "already loaded" marker, so the
+    // failure path has to clear it. Leaving it set meant selecting the same
+    // node again returned early: one flaky /api/tools call and that node showed
+    // "ツールログを取得できなかった" until the tab was reloaded.
+    const body = bodyOf(js, 'function loadDetailTools(');
+    assert.match(body, /\.catch\(function \(\) \{[\s\S]{0,400}tree\.detailToolsFor = null;/,
+      'the failure path does not clear the loaded-key');
+  });
+
   test('the M3 markup still has no inline script, style or handler', () => {
     assert.equal(/<script(?![^>]*\ssrc=)/i.test(html), false);
     assert.equal(/<style[\s>]/i.test(html), false);
@@ -1473,6 +1483,49 @@ describe('notification settings: the panel the server actually hands out', () =>
     assert.match(js, /var first = !firstSnapshotSeen;[\s\S]{0,40}firstSnapshotSeen = true;/);
     assert.match(js, /if \(first\) primeNotifications\(/);
     assert.match(js, /fireQuotaNotifications\(limits, first\);/);
+  });
+
+  test('the master switch stops being disabled once the browser unblocks us', () => {
+    // The bug: `toggle.disabled = true` appeared twice and `= false` never, so
+    // a single `denied` reading latched the button dead for the life of the
+    // tab. Unblocking the site in the browser settings did nothing.
+    const body = bodyOf(js, 'function refreshNotifyButtons(');
+    assert.match(body, /toggle\.disabled = blocked;/, 'the disabled state is not recomputed');
+    assert.equal(/toggle\.disabled = true;[\s\S]*toggle\.disabled = true;/.test(body), false,
+      'the flag is latched in two places again');
+  });
+
+  test('a threshold crossing is not consumed while nothing can be shown', () => {
+    // The bug: evaluateQuota ran on every snapshot, so `fired` was set for a
+    // crossing that was never announced (master off / no permission / quiet
+    // while focused). Switching notifications on then stayed silent until
+    // resets_at rolled over. See notify-rules.test.js for the rule itself.
+    const body = bodyOf(js, 'function fireQuotaNotifications(');
+    assert.match(body, /var allowed = canNotify\(\);/);
+    // `allowed || quotaPrime`: a prime announces nothing by construction, so it
+    // must run even while silent. Deferring it to the first allowed snapshot
+    // would spend that snapshot priming and swallow the crossing.
+    assert.match(body, /RULES\.evaluateQuota\(limits, quotaArmed, notifySettings, quotaPrime, allowed \|\| quotaPrime\)/);
+    assert.match(body, /quotaPrime = false;/);
+  });
+
+  test('turning notifications on re-arms, and the next snapshot only primes', () => {
+    assert.match(js, /function rearmQuota\(\) \{[\s\S]{0,80}quotaArmed = \{\};[\s\S]{0,40}quotaPrime = true;/);
+    // Both routes into "notifications are on now" go through it.
+    assert.match(js, /notifySettings\.enabled = !notifySettings\.enabled;[\s\S]{0,200}rearmQuota\(\);/,
+      'the master switch does not re-arm');
+    assert.match(js, /notifySettings\.enabled = window\.Notification\.permission === 'granted';[\s\S]{0,200}rearmQuota\(\);/,
+      'granting permission does not re-arm');
+  });
+
+  test('a notification id that fell out of the ring replays one entry, not twenty', () => {
+    // The server keeps 20 notifications per session, so the id we remember can
+    // simply be gone. The old code fell back to index 0 and announced the whole
+    // ring at once; the decision now lives in notify-rules.js and is tested
+    // there against both causes (ring overflow and a restarted counter).
+    const body = bodyOf(js, 'function fireNotifications(');
+    assert.match(body, /RULES\.nextNotificationStart\(list, lastSeen\)/);
+    assert.equal(/startIndex = 0;/.test(body), false, 'the replay-everything fallback is back');
   });
 
   test('a throwing render() cannot freeze the page silently', () => {

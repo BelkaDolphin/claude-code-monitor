@@ -144,6 +144,13 @@
   var notifySettings = RULES ? RULES.defaults() : fallbackSettings();
   /** rate-limit window -> {resetsAt, threshold, fired}. Owned by notify-rules.js. */
   var quotaArmed = {};
+  /**
+   * One-shot: the next quota evaluation only RECORDS where things stand. Set on
+   * the first snapshot and whenever the user re-arms by turning notifications
+   * on or granting permission, so that a window which was already over its
+   * threshold while nothing could be shown is not announced retroactively.
+   */
+  var quotaPrime = true;
   /** Which tab is showing. The tree only refreshes while it is the one on screen. */
   var currentView = 'live';
 
@@ -915,16 +922,12 @@
       var name = s.title || s.sessionId.slice(0, 8);
 
       var list = s.notifications || [];
+      // Map.get gives undefined for a session we have never seen and null for
+      // one we know had nothing to say - nextNotificationStart() tells those
+      // apart, and decides what to do when the id we remember is no longer in
+      // the server's 20-entry ring. See notify-rules.js.
       var lastSeen = seenNotification.get(s.sessionId);
-      var startIndex = 0;
-      if (lastSeen) {
-        for (var j = list.length - 1; j >= 0; j--) {
-          if (list[j].id === lastSeen) { startIndex = j + 1; break; }
-        }
-      } else if (!seenNotification.has(s.sessionId)) {
-        // A session that appeared after we connected: announce what it says.
-        startIndex = Math.max(0, list.length - 1);
-      }
+      var startIndex = RULES ? RULES.nextNotificationStart(list, lastSeen) : list.length;
       for (var k = startIndex; k < list.length; k++) {
         var n = list[k];
         if (NOTIFY_TYPES.indexOf(n.type) === -1) continue;
@@ -953,8 +956,26 @@
    */
   function fireQuotaNotifications(limits, prime) {
     if (!RULES) return;
-    var out = RULES.evaluateQuota(limits, quotaArmed, notifySettings, prime === true);
+    if (prime === true) quotaPrime = true;
+    /*
+     * Two different questions, and they pull in opposite directions.
+     *
+     * `allowed` is "could a notification be shown right now?" (canNotify: the
+     * master switch, the permission, and quietWhenFocused). While it is false
+     * evaluateQuota() hands the arm state straight back. Evaluating anyway
+     * would set `fired` for a crossing nobody saw, and the window would then
+     * stay quiet until resets_at rolled over - up to a week for seven_day.
+     *
+     * `quotaPrime` is "record where things stand, announce nothing". A prime
+     * cannot fire by construction, so it has to run EVEN WHILE SILENT: if it
+     * waited for the first allowed snapshot, that snapshot would be spent
+     * priming and would swallow the very crossing the freeze was protecting.
+     * Hence `allowed || quotaPrime`. See architecture 9.4.
+     */
+    var allowed = canNotify();
+    var out = RULES.evaluateQuota(limits, quotaArmed, notifySettings, quotaPrime, allowed || quotaPrime);
     quotaArmed = out.armed;
+    quotaPrime = false;
     for (var i = 0; i < out.fire.length; i++) {
       var f = out.fire[i];
       var label = GAUGE_LABEL[f.window] || f.window;
@@ -965,6 +986,19 @@
         Math.floor(f.pct) + '% 使用' + (reset ? ' · 復帰 ' + reset : '')
       );
     }
+  }
+
+  /**
+   * Throw the threshold memory away and treat the next snapshot as a prime.
+   *
+   * Called when the user turns notifications on or grants permission: those
+   * decisions are about what happens NEXT. A window that was already over its
+   * threshold before the switch was flipped is not news, and announcing it the
+   * moment the switch moves reads as a bug rather than as a warning.
+   */
+  function rearmQuota() {
+    quotaArmed = {};
+    quotaPrime = true;
   }
 
   function refreshNotifyButtons() {
@@ -979,13 +1013,14 @@
       return;
     }
     var perm = window.Notification.permission;
+    var blocked = perm === 'denied';
     permBtn.hidden = perm !== 'default';
-    setText(toggle, notifySettings.enabled ? '通知 ON' : '通知 OFF');
+    // Recomputed on every call, never latched. `disabled = true` alone left the
+    // switch dead for the rest of the tab's life: a user who unblocks the site
+    // in their browser settings got a button they still could not press.
+    toggle.disabled = blocked;
+    setText(toggle, blocked ? '通知 ブロック中' : (notifySettings.enabled ? '通知 ON' : '通知 OFF'));
     toggle.setAttribute('aria-pressed', notifySettings.enabled ? 'true' : 'false');
-    if (perm === 'denied') {
-      setText(toggle, '通知 ブロック中');
-      toggle.disabled = true;
-    }
     setText($('notify-panel-state'), notifyStateText(perm));
   }
 
@@ -1693,6 +1728,11 @@
       })
       .catch(function () {
         if (tree.detailToolsFor !== key) return;
+        // Forget the key BEFORE painting the failure: it is the "already
+        // loaded" marker, so leaving it set means picking the same node again
+        // returns early and the fetch is never retried for as long as the tab
+        // stays open.
+        tree.detailToolsFor = null;
         while (host.firstChild) host.removeChild(host.firstChild);
         host.appendChild(el('p', 'tools__none', 'ツールログを取得できなかった'));
       });
@@ -2279,6 +2319,7 @@
         p.then(function () {
           notifySettings.enabled = window.Notification.permission === 'granted';
           saveNotifySettings();
+          if (notifySettings.enabled) rearmQuota();
           refreshNotifyButtons();
         });
       } else {
@@ -2289,6 +2330,8 @@
     $('notify-toggle').addEventListener('click', function () {
       notifySettings.enabled = !notifySettings.enabled;
       saveNotifySettings();
+      // Whichever way it moved, the threshold memory belongs to the old state.
+      rearmQuota();
       if (notifySettings.enabled && typeof window.Notification !== 'undefined'
           && window.Notification.permission === 'default') {
         var p = window.Notification.requestPermission();

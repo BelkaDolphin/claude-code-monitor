@@ -7,25 +7,25 @@ Live ヘッダの稼働数が、実際に動いている Claude Code の本数�
 
 サーバは本番（47321）に触らず 47416 に別インスタンスを立て、実データ
 （`~/.claude` と `~/.claude-monitor`）をそのまま読ませた。
-このとき動いていた Claude Code は `77b69db3` の1本だけ。
+このとき動いていた Claude Code は `55555555` の1本だけ。
 
 ### 修正前
 
 ```
 == /api/state == 200
 counts: {"total":6,"live":5,"busy":0,"waiting":1,"agentsRunning":1}
-  77b69db3 phase=waiting_input src=hooks  alive=true  lastEventAt=2026-09-06T15:05:15Z
-  ec5bbb84 phase=unknown      src=none    alive=null  lastEventAt=null
-  addd5ad7 phase=unknown      src=none    alive=null  lastEventAt=null
-  b5824c60 phase=unknown      src=none    alive=null  lastEventAt=null
-  ea1b82f5 phase=unknown      src=none    alive=null  lastEventAt=null
-  5340fbb3 phase=ended        src=hooks   alive=null
+  55555555 phase=waiting_input src=hooks  alive=true  lastEventAt=2026-09-06T15:05:15Z
+  66666666 phase=unknown      src=none    alive=null  lastEventAt=null
+  77777777 phase=unknown      src=none    alive=null  lastEventAt=null
+  33333333 phase=unknown      src=none    alive=null  lastEventAt=null
+  11111111 phase=unknown      src=none    alive=null  lastEventAt=null
+  88888888 phase=ended        src=hooks   alive=null
 == /api/sessions == 200 rows=32 live=5
-   77b69db3 live=true  phase=waiting_input endedAt=null
-   addd5ad7 live=true  phase=unknown       endedAt=null   ← 一覧では「稼働中」
-   b5824c60 live=true  phase=unknown       endedAt=null   ← 9/3 のセッション
-   ea1b82f5 live=true  phase=unknown       endedAt=null   ← 9/2 のセッション
-   ec5bbb84 live=true  phase=unknown       endedAt=null
+   55555555 live=true  phase=waiting_input endedAt=null
+   77777777 live=true  phase=unknown       endedAt=null   ← 一覧では「稼働中」
+   33333333 live=true  phase=unknown       endedAt=null   ← 9/3 のセッション
+   11111111 live=true  phase=unknown       endedAt=null   ← 9/2 のセッション
+   66666666 live=true  phase=unknown       endedAt=null
 ```
 
 `counts.live` が 5。ヘッダの数字が現実と合わないだけでなく、ツリーの左一覧が
@@ -43,11 +43,11 @@ rate_limits はここにしか無いので、レコードを作ること自体�
 
 ```
 $ ls ~/.claude-monitor/statusline/
-77b69db3-....json   Sep  7 00:01   ← 動いている1本
-addd5ad7-....json   Sep  5 01:10
-b5824c60-....json   Sep  3 23:39
-ea1b82f5-....json   Sep  3 01:13
-ec5bbb84-....json   Sep  5 05:19
+55555555-....json   Sep  7 00:01   ← 動いている1本
+77777777-....json   Sep  5 01:10
+33333333-....json   Sep  3 23:39
+11111111-....json   Sep  3 01:13
+66666666-....json   Sep  5 05:19
 ```
 
 これらは hook イベントも `sessions/<pid>.json` も持たないので
@@ -65,7 +65,7 @@ ec5bbb84-....json   Sep  5 05:19
 `SessionEnd` を出さずに落ちたセッション——Claude Code が殺された、
 端末が閉じた、マシンが再起動した——は永久に `busy` のまま残る。
 
-実測: `ea1b82f5` の最後のイベントは `2026-09-02T23:59:50` の `PostToolUse`。
+実測: `11111111` の最後のイベントは `2026-09-02T23:59:50` の `PostToolUse`。
 `collector` は起動時に直近2日分の day-file しか再生しない
 （`listEventDates().slice(-2)`）ので今回は hook が1件も載らなかったが、
 day-file が窓の中にある間はこのセッションが「実行中」と表示され続ける。
@@ -112,16 +112,16 @@ day-file が窓の中にある間はこのセッションが「実行中」と�
 ```
 == /api/state == 200
 counts: {"total":6,"live":1,"busy":0,"waiting":1,"agentsRunning":1}
-  77b69db3 phase=waiting_input src=hooks alive=true
-  ec5bbb84 phase=unknown src=none  ← レコードは残る（model/cost の置き場）
-  addd5ad7 phase=unknown src=none
-  b5824c60 phase=unknown src=none
-  ea1b82f5 phase=unknown src=none
-  5340fbb3 phase=ended   src=hooks
+  55555555 phase=waiting_input src=hooks alive=true
+  66666666 phase=unknown src=none  ← レコードは残る（model/cost の置き場）
+  77777777 phase=unknown src=none
+  33333333 phase=unknown src=none
+  11111111 phase=unknown src=none
+  88888888 phase=ended   src=hooks
 == /api/sessions == 200 rows=30 live=1
-   77b69db3 live=true  phase=waiting_input endedAt=null
-   b5824c60 live=false phase=unknown endedAt=2026-09-03T14:38:17.819Z src=transcript
-   ea1b82f5 live=false phase=unknown endedAt=2026-09-02T16:13:09.355Z src=transcript
+   55555555 live=true  phase=waiting_input endedAt=null
+   33333333 live=false phase=unknown endedAt=2026-09-03T14:38:17.819Z src=transcript
+   11111111 live=false phase=unknown endedAt=2026-09-02T16:13:09.355Z src=transcript
 ```
 
 `counts.live` が 1。古い2本は稼働から外れ、一覧では「稼働中」ではなく

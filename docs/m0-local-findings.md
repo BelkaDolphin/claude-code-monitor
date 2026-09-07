@@ -117,10 +117,10 @@ pid生存確認: `tasklist`はコードページ問題で文字化けしたが�
 
 **確認した事実:**
 
-最新セッション（本セッション自身）`C:\Users\alice\.claude\projects\D--develop-Claude--\ea1b82f5-5a07-4d1d-9920-479d8cece715.jsonl`（97行）の先頭3行:
+最新セッション（本セッション自身）`C:\Users\alice\.claude\projects\D--develop-Claude--\11111111-2222-4333-8444-555555555555.jsonl`（97行）の先頭3行:
 ```json
-{"type":"mode","mode":"normal","sessionId":"ea1b82f5-5a07-4d1d-9920-479d8cece715"}
-{"type":"permission-mode","permissionMode":"auto","sessionId":"ea1b82f5-5a07-4d1d-9920-479d8cece715"}
+{"type":"mode","mode":"normal","sessionId":"11111111-2222-4333-8444-555555555555"}
+{"type":"permission-mode","permissionMode":"auto","sessionId":"11111111-2222-4333-8444-555555555555"}
 {"type":"bridge-session","sessionId":"...","bridgeSessionId":"cse_016R4Ny3ZaLdsiLNWJXihgDz","lastSequenceNum":0,"ownerAccountUuid":"...","ownerOrganizationUuid":"..."}
 ```
 type出現数:

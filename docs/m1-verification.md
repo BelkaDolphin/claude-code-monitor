@@ -80,15 +80,15 @@ dedupe: message.id, latest timestamp wins -> 9,8xx unique messages
 ### 3.1 現在の親セッション（M1実装中のセッション）
 
 ```
-$ node src/cli.js tree ea1b82f5
-session ea1b82f5-5a07-4d1d-9920-479d8cece715
+$ node src/cli.js tree 11111111
+session 11111111-2222-4333-8444-555555555555
 cwd     D:\develop\Claude監視
 files   4 (main + 3 subagent transcript(s))
 
-session ea1b82f5-... (D:\develop\Claude監視) tools=18 msgs=65 out=32462 1411s
-|- agent a04d1504b8947b5e4 [general-purpose] "M0 local data verification" d1 sonnet async-unknown tools=58 msgs=166 out=5841 813s
-|- agent af97eb64c6874b94f [general-purpose] "M0 official docs verification" d1 sonnet async-unknown tools=58 msgs=156 out=2857 707s
-`- agent a4d8ef622698332c9 [general-purpose] "Implement M1 core modules" d1 opus async-unknown tools=47 msgs=123 out=349 753s
+session 11111111-... (D:\develop\Claude監視) tools=18 msgs=65 out=32462 1411s
+|- agent afafafafafafafafa [general-purpose] "M0 local data verification" d1 sonnet async-unknown tools=58 msgs=166 out=5841 813s
+|- agent a6a6a6a6a6a6a6a6a [general-purpose] "M0 official docs verification" d1 sonnet async-unknown tools=58 msgs=156 out=2857 707s
+`- agent a4a4a4a4a4a4a4a4a [general-purpose] "Implement M1 core modules" d1 opus async-unknown tools=47 msgs=123 out=349 753s
 ```
 
 M0の2エージェントとM1実装エージェント自身が子ノードとして出た。
@@ -96,15 +96,15 @@ M0の2エージェントとM1実装エージェント自身が子ノードとし
 ### 3.2 ネスト（spawnDepth=2）の確認
 
 ```
-$ node src/cli.js tree 81626617
-session 81626617-4986-4b3f-9350-e1b93c1df243 (D:\develop\Claude\CaludeGame) tools=96 msgs=357 out=117815
-|- agent a40af6953d4a70c6a [Explore] "研究UIと効果表示の調査" d1 claude-opus-5 completed tools=53 ...
-|- agent a81a174a6ae7217c9 [general-purpose] "監査1: GDD vs 実装の乖離" d1 opus async-unknown ...
-|  |- agent add4155f41f37e80f [Explore] "Audit UI promises vs GDD" d2 claude-opus-5 async-unknown ...
-|  `- agent a0d38b289c4289670 [Explore] "Audit cycle/inheritance engine promises" d2 ...
-|- agent af085ee053467bda1 [general-purpose] "監査2: 死にシステム検出" d1 opus async-unknown ...
-|  |- agent a446b56c81fa842f0 [general-purpose] "Audit event system wiring" d2 ...
-|  `- agent ae98f42c5cd5b5733 [general-purpose] "Audit outpost/exodus/bond/storage" d2 ...
+$ node src/cli.js tree 22222222
+session 22222222-3333-4444-8555-666666666666 (D:\develop\Claude\CaludeGame) tools=96 msgs=357 out=117815
+|- agent adadadadadadadada [Explore] "研究UIと効果表示の調査" d1 claude-opus-5 completed tools=53 ...
+|- agent ababababababababa [general-purpose] "監査1: GDD vs 実装の乖離" d1 opus async-unknown ...
+|  |- agent a9a9a9a9a9a9a9a9a [Explore] "Audit UI promises vs GDD" d2 claude-opus-5 async-unknown ...
+|  `- agent aeaeaeaeaeaeaeaea [Explore] "Audit cycle/inheritance engine promises" d2 ...
+|- agent a7a7a7a7a7a7a7a7a [general-purpose] "監査2: 死にシステム検出" d1 opus async-unknown ...
+|  |- agent acacacacacacacaca [general-purpose] "Audit event system wiring" d2 ...
+|  `- agent a8a8a8a8a8a8a8a8a [general-purpose] "Audit outpost/exodus/bond/storage" d2 ...
 ...（全20ノード、orphan 0件）
 ```
 
@@ -126,7 +126,7 @@ timezone           Asia/Tokyo
 $ node src/cli.js sessions
 sessions dir: C:\Users\alice\.claude\sessions  (1 file(s), 1 *.key ignored)
   PID  ALIVE  STATUS  HOOK  SESSION      NAME        AGE   CWD
-29340  yes    busy    -     ea1b82f5...  claude-37  895s   D:\develop\Claude監視
+29340  yes    busy    -     11111111...  claude-37  895s   D:\develop\Claude監視
 ```
 → `.key` は開かずスキップ。`kill(0)` で生存 yes。HOOK が `-` なのは
 install-hooks 未実行のため（正しい表示）。
@@ -134,22 +134,22 @@ install-hooks 未実行のため（正しい表示）。
 ```
 $ node src/cli.js list --days 5
 4 session(s) within 5 day(s); 65 older skipped; 31 project dir(s)
-ea1b82f5 ... 397KB  subs=3  D--develop-Claude--  D:\develop\Claude監視
+11111111 ... 397KB  subs=3  D--develop-Claude--  D:\develop\Claude監視
 ```
 → cwd はディレクトリ名からの逆変換ではなく jsonl 内の `cwd` から取得。
 `D--develop-Claude--` から `D:\develop\Claude監視` は復元不可能なので、この方式が必須。
 
 ```
-$ node src/cli.js tools ea1b82f5 --limit 8
-session ea1b82f5-...: 196 tool call(s), 9 error(s), 1 pending
+$ node src/cli.js tools 11111111 --limit 8
+session 11111111-...: 196 tool call(s), 9 error(s), 1 pending
 by tool: Bash=114 WebFetch=23 Write=23 Edit=9 Read=5 WebSearch=5 ToolSearch=4 Agent=3 ...
-13:19:26   Bash  ok       3963  a4d8ef62  cd "D:/develop/Claude監視" && node src/cli.js usage ...
-13:20:04   Bash  pending     -  a4d8ef62  cd "D:/develop/Claude監視" && node src/cli.js tools ...
+13:19:26   Bash  ok       3963  a4a4a4a4  cd "D:/develop/Claude監視" && node src/cli.js usage ...
+13:20:04   Bash  pending     -  a4a4a4a4  cd "D:/develop/Claude監視" && node src/cli.js tools ...
 ```
 → 実行中の呼び出しが `pending` として正しく出た（結果がまだ書かれていないため）。
 
 ```
-$ node src/cli.js stats ea1b82f5
+$ node src/cli.js stats 11111111
 files 4, lines 674, parsed 674, blank 0, parse failures 0
 record types: assistant 345 / user 207 / attachment 51 / queue-operation 14 /
               mode 10 / permission-mode 10 / bridge-session 10 / atis-latch 10 /

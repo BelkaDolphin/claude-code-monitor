@@ -168,14 +168,24 @@
    * (known constraint 4/5), so they blink out routinely; dropping the state
    * there would re-notify on every reconnect.
    *
+   * When `allowed` is false nothing is evaluated at all and the arm state comes
+   * back byte for byte. Silence is NOT the same as "handled": if a crossing
+   * were marked `fired` while the master switch was off, the permission was not
+   * granted or the tab was in front of the user, switching notifications on
+   * would buy nothing - the window would stay quiet until `resets_at` rolled
+   * over hours later.
+   *
    * @param {object|null} limits  session.rateLimits from the freshest capture
    * @param {object} armed        previous arm state (this function never mutates it)
    * @param {object} settings     normalized settings
    * @param {boolean} prime       first snapshot: record the state, announce nothing
+   * @param {boolean} [allowed]   pass false when a notification cannot be shown
+   *   right now; omit (or pass true) to evaluate normally
    * @returns {{armed: object, fire: Array<object>}}
    */
-  function evaluateQuota(limits, armed, settings, prime) {
+  function evaluateQuota(limits, armed, settings, prime, allowed) {
     var prev = isObject(armed) ? armed : {};
+    if (allowed === false) return { armed: prev, fire: [] };
     var next = {};
     var fire = [];
     var cfgAll = isObject(settings) && isObject(settings.quota) ? settings.quota : {};
@@ -217,6 +227,46 @@
     return { armed: next, fire: fire };
   }
 
+  /**
+   * Where to start announcing in one session's notification list.
+   *
+   * The server keeps only the last MAX_NOTIFICATIONS (20) entries per session
+   * and ids them `<sessionId>#<n>` from a counter that lives in memory. Two
+   * things follow, and both used to be handled wrongly:
+   *
+   *   - the id we remember can fall OUT of the ring while the tab is asleep or
+   *     disconnected. Starting from 0 then replays up to twenty notifications
+   *     in one go, which is exactly the burst priming exists to avoid.
+   *   - the counter restarts at 1 when the server restarts, so an id we
+   *     remember can match a DIFFERENT notification with the same number.
+   *
+   * Neither is distinguishable from the ids alone, and both mean the same
+   * thing: we no longer know where we were. Announce the newest entry and
+   * resynchronise from there - one notification too few beats twenty too many.
+   * (The restart case where the old id happens to match is not detectable at
+   * all from the client; it silently skips what came before the match.)
+   *
+   * @param {Array} list      session.notifications, oldest first
+   * @param {*} lastSeen      the id we last reacted to; `null` for a session we
+   *   know that had nothing to say; `undefined` for a session we have never
+   *   seen (Map.get on a missing key)
+   * @returns {number} index of the first entry to announce; list.length = none
+   */
+  function nextNotificationStart(list, lastSeen) {
+    var items = Array.isArray(list) ? list : [];
+    if (items.length === 0) return 0;
+    // A session that appeared after we connected: it arrives with a backlog we
+    // were never present for, so only its latest line is news.
+    if (lastSeen === undefined) return items.length - 1;
+    // A session we were already watching that had no notifications until now:
+    // every entry in the list arrived while we were watching.
+    if (lastSeen === null || lastSeen === '') return 0;
+    for (var i = items.length - 1; i >= 0; i--) {
+      if (isObject(items[i]) && items[i].id === lastSeen) return i + 1;
+    }
+    return items.length - 1;
+  }
+
   root.CMNotifyRules = {
     SETTINGS_VERSION: SETTINGS_VERSION,
     KINDS: KINDS,
@@ -227,6 +277,7 @@
     normalizeThreshold: normalizeThreshold,
     parseThreshold: parseThreshold,
     parse: parse,
-    evaluateQuota: evaluateQuota
+    evaluateQuota: evaluateQuota,
+    nextNotificationStart: nextNotificationStart
   };
 })(typeof window !== 'undefined' ? window : this);

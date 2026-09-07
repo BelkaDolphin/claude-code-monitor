@@ -32,24 +32,47 @@ const WIN = process.platform === 'win32';
 let tmp;
 let script;
 
+const SLEEPER_SRC = 'process.stdout.write(String(process.pid) + "\\n");\nsetInterval(function () {}, 1000);\n';
+
 before(() => {
   tmp = makeTmpDir('cm-ccusage');
   script = path.join(tmp.dir, 'sleeper.js');
   // Prints its pid, flushes it, then holds the event loop open past any
-  // timeout this test uses. No quotes in the command line, so cmd.exe cannot
-  // mangle it.
-  fs.writeFileSync(script, 'process.stdout.write(String(process.pid) + "\\n");\nsetInterval(function () {}, 1000);\n', 'utf8');
+  // timeout this test uses.
+  fs.writeFileSync(script, SLEEPER_SRC, 'utf8');
 });
 
 after(() => {
   if (tmp) tmp.cleanup();
 });
 
-/** The same two-level shape production uses, minus npx. */
+/**
+ * Run `scriptFile` with node, no shell in between.
+ *
+ * runCcusage() spawns an injected command with windowsVerbatimArguments on
+ * Windows, and that flag applies to `file` too: it is prepended to the command
+ * line unquoted. So `file` must be a name without a space (`process.execPath`
+ * is usually `C:\Program Files\nodejs\node.exe`, which would arrive as two
+ * arguments) and the script path has to carry its own quotes - otherwise a
+ * fixture under `C:\Users\John Smith\AppData\Local\Temp\...` is split at the
+ * space and never runs. Off Windows nothing is verbatim and execPath is exact.
+ */
+function nodeCommand(scriptFile) {
+  return WIN
+    ? { file: 'node', args: [`"${scriptFile}"`] }
+    : { file: process.execPath, args: [scriptFile] };
+}
+
+/**
+ * The same two-level shape production uses, minus npx: only the timeout test
+ * needs a cmd.exe above the node, so it is the only place that keeps one.
+ * `node` stays unquoted on purpose - `cmd /s /c` strips the outermost quotes
+ * when the string both starts and ends with one.
+ */
 function sleeperCommand() {
   return WIN
-    ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node ${script}`] }
-    : { file: 'node', args: [script] };
+    ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node "${script}"`] }
+    : { file: process.execPath, args: [script] };
 }
 
 function alive(pid) {
@@ -114,9 +137,7 @@ describe('runCcusage: ccusage is not installed', () => {
   function failingCommand(text, code) {
     const file = path.join(tmp.dir, `fail-${code}-${text.length}.js`);
     fs.writeFileSync(file, `process.stderr.write(${JSON.stringify(text)});\nprocess.exit(${code});\n`, 'utf8');
-    return WIN
-      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node ${file}`] }
-      : { file: 'node', args: [file] };
+    return nodeCommand(file);
   }
 
   test('the npx refusal is reported as notInstalled, not as a bare exit code', async () => {
@@ -138,9 +159,7 @@ describe('runCcusage: ccusage is not installed', () => {
   test('a success is never notInstalled, and neither is a rejected argument', async () => {
     const quick = path.join(tmp.dir, 'ok.js');
     fs.writeFileSync(quick, 'process.stdout.write("{}");\n', 'utf8');
-    const command = WIN
-      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node ${quick}`] }
-      : { file: 'node', args: [quick] };
+    const command = nodeCommand(quick);
     const ok = await runCcusage([], { timeoutMs: 20000, command });
     assert.equal(ok.ok, true);
     assert.equal(ok.notInstalled, false);
@@ -186,14 +205,47 @@ describe('runCcusage: a run that never returns', () => {
   test('a run that finishes inside the timeout is not reported as timed out', async () => {
     const quick = path.join(tmp.dir, 'quick.js');
     fs.writeFileSync(quick, 'process.stdout.write("{\\"ok\\":1}");\n', 'utf8');
-    const command = WIN
-      ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node ${quick}`] }
-      : { file: 'node', args: [quick] };
-    const res = await runCcusage([], { timeoutMs: 20000, command });
+    const res = await runCcusage([], { timeoutMs: 20000, command: nodeCommand(quick) });
     assert.equal(res.timedOut, false);
     assert.equal(res.ok, true);
     assert.equal(res.code, 0);
     assert.deepEqual(parseCcusageJson(res.stdout), { ok: 1 });
+  });
+
+  /*
+   * The regression: the fixtures used to interpolate the script path into a
+   * `cmd.exe /c node <path>` string with no quotes. Every developer whose
+   * Windows account name contains a space - `C:\Users\John Smith\AppData\...` -
+   * saw these tests fail with "Cannot find module 'C:\Users\John'". Nothing
+   * about ccusage depends on the path shape, so the fixture directory is the
+   * thing under test here.
+   */
+  test('a fixture under a path containing a space still runs', async () => {
+    const spaced = makeTmpDir('cm ccusage space');
+    try {
+      assert.ok(spaced.dir.includes(' '), 'the temp dir must actually contain a space');
+      const quick = path.join(spaced.dir, 'spaced ok.js');
+      fs.writeFileSync(quick, 'process.stdout.write("{\\"spaced\\":1}");\n', 'utf8');
+      const res = await runCcusage([], { timeoutMs: 20000, command: nodeCommand(quick) });
+      assert.equal(res.ok, true, `stderr: ${res.stderr}`);
+      assert.equal(res.code, 0);
+      assert.deepEqual(parseCcusageJson(res.stdout), { spaced: 1 });
+
+      // ...and the two-level cmd.exe shape the timeout path needs, too.
+      const sleeper = path.join(spaced.dir, 'spaced sleeper.js');
+      fs.writeFileSync(sleeper, SLEEPER_SRC, 'utf8');
+      const command = WIN
+        ? { file: 'cmd.exe', args: ['/d', '/s', '/c', `node "${sleeper}"`] }
+        : { file: process.execPath, args: [sleeper] };
+      const slow = await runCcusage([], { timeoutMs: 1000, command });
+      assert.equal(slow.timedOut, true);
+      const pid = Number(String(slow.stdout).trim().split(/\s+/)[0]);
+      assert.ok(Number.isInteger(pid) && pid > 0,
+        `the fixture never started; stdout=${JSON.stringify(slow.stdout)} stderr=${JSON.stringify(slow.stderr)}`);
+      assert.ok(await waitGone(pid), `the child ${pid} survived the timeout`);
+    } finally {
+      spaced.cleanup();
+    }
   });
 
   test('an unsafe argument is refused before anything is spawned', async () => {
