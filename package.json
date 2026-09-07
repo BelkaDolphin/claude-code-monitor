@@ -1,9 +1,15 @@
 {
-  "name": "claude-monitor",
+  "name": "claude-code-monitor",
   "version": "0.1.0",
+  "description": "Local, dependency-free dashboard for Claude Code: live session/tool status, subagent tree, token usage, notification settings, and a Windows tray/autostart-capable server.",
   "private": true,
+  "license": "MIT",
+  "author": "BelkaDolphin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BelkaDolphin/claude-code-monitor.git"
+  },
   "type": "module",
-  "description": "Claude Code monitoring dashboard - core (M1) + local server and Live view (M2)",
   "engines": {
     "node": ">=20"
   },

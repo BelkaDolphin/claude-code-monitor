@@ -18,6 +18,29 @@ Claude Code の稼働状況・サブエージェントツリー・トークン�
 [docs/notify-settings-verification.md](docs/notify-settings-verification.md)、
 稼働数の数え方の修正は [docs/live-count-fix.md](docs/live-count-fix.md) を参照。
 
+## 必要環境
+
+- Node.js 20 以上（検証環境: v24.13.0）
+- Claude Code 2.1.258 で検証
+- 動作確認は Windows 11 のみ。`serve` と hooks の登録は OS 依存のコードを持たないが、Windows 以外では未検証。`install-autostart` と `tray` は Windows 専用。
+
+## クイックスタート
+
+```bash
+git clone https://github.com/BelkaDolphin/claude-code-monitor.git
+cd claude-code-monitor
+node src/cli.js serve --open     # サーバを起動して既定のブラウザで開く
+```
+
+ライブ状態（稼働中・ツール実行・サブエージェント起動終了・通知）と `rate_limits` を
+取り込むには hooks / statusLine の登録が要る（任意）。まず `--dry-run` で
+内容を確認してから実行する。
+
+```bash
+node src/cli.js install-hooks --dry-run
+node src/cli.js install-hooks
+```
+
 ## ダッシュボード
 
 ```bash
@@ -146,11 +169,6 @@ GET / HEAD 以外は 405。`/api/usage` は結果を `<monitorDir>/usage/daily.j
 - サーバが予期せぬ例外で倒れた場合は、**黙って消えずに**理由を表示し、
   ポートを解放して終了コード1で終わる。古い画面を見て「異常なし」と
   誤解しないための設計。
-
-## 必要環境
-
-- Node.js 20 以上（検証環境: v24.13.0）
-- Claude Code 2.1.258 で検証
 
 ## セットアップ
 
@@ -411,3 +429,7 @@ $env:CLAUDE_MONITOR_IT = "1"; node --test test/integration.test.js
   知っているセッションのディスク上に7体分しか残っていなかった。Tree ビューは
   そういうエージェントも hooks の証跡だけで描くが、親は特定できないので
   「親が特定できないエージェント」に入る。
+
+## ライセンス
+
+MIT License。詳細は [LICENSE](LICENSE) を参照。

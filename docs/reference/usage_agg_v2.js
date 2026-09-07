@@ -1,9 +1,15 @@
 // v2: dedup by message.id but keep the LAST (latest timestamp / max usage) record,
 // since duplicate log lines for the same message.id/requestId can carry partial
 // (in-progress) usage snapshots followed by the final complete one.
+//
+// M0-era one-off verification script. Not part of the dashboard proper
+// (see src/usage.js for the real, tested implementation).
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const ROOT = 'C:\\Users\\alice\\.claude\\projects';
+const ROOT = process.argv[2]
+  || (process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, 'projects') : null)
+  || path.join(os.homedir(), '.claude', 'projects');
 
 function walk(dir, out) {
   let entries;
