@@ -9,6 +9,7 @@
  *   GET /?t=<token>   one-shot bootstrap: sets the cookie, redirects to /
  *   GET /             the dashboard (cookie required)
  *   GET /app.js       (cookie required)
+ *   GET /notify-rules.js  (cookie required)
  *   GET /style.css    (cookie required)
  *   GET /api/state    snapshot JSON
  *   GET /api/stream   SSE: `snapshot` on connect and on every change
@@ -72,6 +73,8 @@ const STATIC_FILES = new Map([
   ['/', { file: 'index.html', type: 'text/html; charset=utf-8' }],
   ['/index.html', { file: 'index.html', type: 'text/html; charset=utf-8' }],
   ['/app.js', { file: 'app.js', type: 'text/javascript; charset=utf-8' }],
+  // Loaded before app.js: the pure notification rules (see architecture 9).
+  ['/notify-rules.js', { file: 'notify-rules.js', type: 'text/javascript; charset=utf-8' }],
   ['/style.css', { file: 'style.css', type: 'text/css; charset=utf-8' }],
 ]);
 

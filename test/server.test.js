@@ -11,6 +11,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
 
 import { makeTmpDir, appendJsonl, writeJsonl, assistantRec } from './helpers.js';
 import { startServer, routeKey, resolvePort, installCrashHandlers, DEFAULT_PORT } from '../src/server.js';
@@ -923,8 +924,11 @@ describe('M3: the tree view the server actually hands out', () => {
     }
     // The tab no longer advertises itself as unbuilt.
     assert.match(html, /id="tab-tree" data-view="tree">Tree<\/button>/);
-    // Usage still does.
-    assert.match(html, /id="tab-usage" data-view="usage">Usage<span class="tab__m">M4<\/span>/);
+    // Neither does Usage, now that M4 shipped: the milestone badge is gone and
+    // so is the class that drew it.
+    assert.match(html, /id="tab-usage" data-view="usage">Usage<\/button>/);
+    assert.equal(/tab__m/.test(html), false, 'the milestone badge is still in the markup');
+    assert.equal(/\.tab__m/.test(css), false, 'the milestone badge style is still in style.css');
   });
 
   test('it talks to the three M3 endpoints and nothing else', () => {
@@ -1202,3 +1206,151 @@ describe('M4: the Usage view the server actually hands out', () => {
     assert.equal(/--m-[a-z]+: var\(--wait\)/.test(css), false, 'amber means "a human is needed"');
   });
 });
+
+describe('notification settings: the panel the server actually hands out', () => {
+  let js;
+  let html;
+  let css;
+  let rules;
+
+  before(async () => {
+    js = (await get('/app.js', { headers: authed() })).body;
+    html = (await get('/', { headers: authed() })).body;
+    css = (await get('/style.css', { headers: authed() })).body;
+    rules = (await get('/notify-rules.js', { headers: authed() })).body;
+  });
+
+  test('/notify-rules.js needs the cookie, like every other static file', async () => {
+    assert.equal((await get('/notify-rules.js')).status, 403);
+  });
+
+  test('and is served as javascript with it', async () => {
+    const res = await get('/notify-rules.js', { headers: authed() });
+    assert.equal(res.status, 200);
+    assert.match(res.headers['content-type'], /javascript/);
+    assert.match(res.body, /CMNotifyRules/);
+  });
+
+  test('the page loads it BEFORE app.js', () => {
+    const rulesAt = html.indexOf('<script src="/notify-rules.js"></script>');
+    const appAt = html.indexOf('<script src="/app.js"></script>');
+    assert.ok(rulesAt > 0, 'the page does not load /notify-rules.js');
+    assert.ok(appAt > rulesAt, 'app.js is loaded before the rules it depends on');
+  });
+
+  test('every control the client wires up exists in the markup', () => {
+    for (const id of [
+      'notify-settings', 'notify-panel', 'notify-panel-state', 'notify-test', 'notify-close',
+      'notify-quiet',
+      'notify-kind-permission_prompt', 'notify-kind-idle_prompt', 'notify-kind-agent_needs_input',
+      'notify-kind-agent_completed', 'notify-kind-turn_complete',
+      'notify-quota-five_hour', 'notify-quota-five_hour-th',
+      'notify-quota-seven_day', 'notify-quota-seven_day-th',
+    ]) {
+      assert.match(html, new RegExp(`id="${id}"`), `missing #${id}`);
+    }
+    // The master switch and the permission button are still there.
+    assert.match(html, /id="notify-toggle"/);
+    assert.match(html, /id="notify-permission"/);
+  });
+
+  test('the threshold inputs are bounded in the markup, not only in the code', () => {
+    for (const w of ['five_hour', 'seven_day']) {
+      const re = new RegExp(`id="notify-quota-${w}-th"[^>]*min="1"[^>]*max="100"`);
+      assert.match(html, re, `#notify-quota-${w}-th is unbounded`);
+    }
+  });
+
+  test('the panel is labelled and wired to its button for a screen reader', () => {
+    assert.match(html, /id="notify-settings" aria-expanded="false" aria-controls="notify-panel"/);
+    assert.match(html, /id="notify-panel" aria-label="通知設定" hidden/);
+    // Every checkbox and number input is reachable by its own label.
+    for (const id of [
+      'notify-quiet', 'notify-kind-turn_complete', 'notify-quota-five_hour', 'notify-quota-five_hour-th',
+    ]) {
+      assert.match(html, new RegExp(`for="${id}"`), `#${id} has no label`);
+    }
+  });
+
+  test('the client persists ONE versioned key and migrates the old one', () => {
+    assert.match(js, /'cm\.notify\.settings'/);
+    assert.match(js, /'cm\.notify\.enabled'/);
+    // The old key is read for the migration and then removed - never written.
+    assert.match(js, /function dropLegacyStore/);
+    assert.equal(/writeStore\(\s*(?:notifyEnabled|notifySettings\.enabled)\s*\?\s*'1'/.test(js), false,
+      'the client still writes the pre-settings on/off value');
+  });
+
+  test('the client asks notify-rules.js instead of re-deriving the rules', () => {
+    assert.match(js, /window\.CMNotifyRules/);
+    assert.match(js, /RULES\.evaluateQuota\(/);
+    assert.match(js, /RULES\.parse\(/);
+    assert.match(js, /RULES\.parseThreshold\(/);
+    // The quota alert reuses the ribbon's "freshest capture" decision.
+    assert.match(js, /var limits = renderQuota\(/);
+    assert.equal(/function freshestRateLimits/.test(rules), false,
+      'the freshest-capture rule is duplicated in notify-rules.js');
+  });
+
+  test('every notification path consults the settings', () => {
+    // Kind switches.
+    assert.match(js, /if \(!kindEnabled\(n\.type\)\) continue;/);
+    assert.match(js, /kindEnabled\('turn_complete'\)/);
+    // The focus rule is a setting now, not a hard-coded silence.
+    assert.match(js, /notifySettings\.quietWhenFocused[\s\S]{0,120}document\.hasFocus\(\)/);
+    // The master switch still gates everything.
+    assert.match(js, /if \(!notifySettings\.enabled\) return false;/);
+  });
+
+  test('the first snapshot primes the quota alerts instead of firing them', () => {
+    assert.match(js, /fireQuotaNotifications\(limits, !firstSnapshotSeen\);/);
+  });
+
+  test('the test notification deliberately ignores quietWhenFocused', () => {
+    const body = bodyOf(js, 'function showTestNotification(');
+    assert.equal(/canNotify\(\)/.test(body), false, 'the test button goes through canNotify()');
+    assert.match(body, /new window\.Notification\(/);
+  });
+
+  test('the panel closes on Escape and on a click outside it', () => {
+    assert.match(js, /e\.key !== 'Escape'/);
+    assert.match(js, /\$\('notify-panel'\)\.contains\(e\.target\)/);
+  });
+
+  test('the shipped rules file uses no forbidden DOM sink', () => {
+    for (const re of [
+      /\.innerHTML/, /\.outerHTML/, /\.insertAdjacentHTML\s*\(/,
+      /document\.write\s*\(/, /\beval\s*\(/, /new\s+Function\s*\(/,
+      /https?:\/\//,
+    ]) {
+      assert.equal(re.test(rules), false, `notify-rules.js uses ${re}`);
+    }
+  });
+
+  test('the panel markup adds no inline script, style or handler', () => {
+    assert.equal(/<script(?![^>]*\ssrc=)/i.test(html), false);
+    assert.equal(/<style[\s>]/i.test(html), false);
+    assert.equal(/\son[a-z]+\s*=/i.test(html), false);
+  });
+
+  test('the stylesheet styles the panel and pulls in nothing external', () => {
+    for (const cls of ['.npanel', '.npanel__fs', '.nrow', '.num', '.npanel__foot']) {
+      assert.ok(css.includes(cls), `missing style for ${cls}`);
+    }
+    assert.equal(/@import/.test(css), false);
+    assert.equal(/url\(\s*['"]?https?:/i.test(css), false);
+  });
+
+  test('nothing about the settings ever leaves the browser', () => {
+    // No endpoint, no request: the settings are localStorage only.
+    assert.equal(/\/api\/notify/.test(js), false);
+    assert.equal(/notify/i.test(readSrc('src/server.js').replace(/notify-rules\.js/g, '')), false,
+      'the server grew a notification concept beyond serving the rules file');
+  });
+});
+
+/** Read a repo file relative to the package root. */
+function readSrc(rel) {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return fs.readFileSync(path.resolve(here, '..', rel), 'utf8');
+}

@@ -190,7 +190,9 @@ code { font-family: var(--font-mono); font-size: .92em; }
 .stat--alert .stat__n { color: var(--wait); }
 .stat--bad .stat__n { color: var(--dead); }
 
-.topbar__actions { display: flex; gap: calc(var(--u) * 2); }
+/* position: relative anchors the settings popover to the buttons that open it,
+   so the panel needs no measured offset from the top of the page. */
+.topbar__actions { display: flex; gap: calc(var(--u) * 2); position: relative; }
 
 .btn {
   font-family: var(--font-mono);
@@ -206,6 +208,88 @@ code { font-family: var(--font-mono); font-size: .92em; }
 .btn:hover { color: var(--ink); border-color: var(--rail); }
 .btn[aria-pressed="true"] { color: var(--ok); border-color: var(--ok); }
 .btn[hidden] { display: none; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* --------------------------- notification panel -------------------------- */
+
+.npanel {
+  position: absolute;
+  top: calc(100% + var(--u) * 2);
+  right: 0;
+  z-index: 20;
+  width: 300px;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: calc(var(--u) * 3) calc(var(--u) * 4) calc(var(--u) * 4);
+  background: var(--panel-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.npanel[hidden] { display: none; }
+
+.npanel__h {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.npanel__note {
+  margin: calc(var(--u) * 1.5) 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.npanel__note:empty { display: none; }
+
+.npanel__fs {
+  margin: calc(var(--u) * 3) 0 0;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.npanel__l {
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.nrow {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--u) * 1.5);
+  padding: 3px 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.nrow label { cursor: pointer; }
+.nrow input[type="checkbox"] { accent-color: var(--busy); cursor: pointer; flex: none; }
+.nrow__u { color: var(--ink-3); }
+
+.num {
+  width: 4.5em;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 1px calc(var(--u));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.npanel__foot {
+  display: flex;
+  gap: calc(var(--u) * 2);
+  margin-top: calc(var(--u) * 3);
+}
 
 /* ----------------------------- quota ribbon ----------------------------- */
 
@@ -299,14 +383,6 @@ code { font-family: var(--font-mono); font-size: .92em; }
 }
 .tab:hover { color: var(--ink-2); }
 .tab--on { color: var(--ink); border-bottom-color: var(--ink); }
-
-.tab__m {
-  font-size: 9px;
-  vertical-align: super;
-  margin-left: 3px;
-  letter-spacing: 0;
-  color: var(--ink-3);
-}
 
 /* --------------------------------- main --------------------------------- */
 
@@ -1177,7 +1253,10 @@ main {
 @media (max-width: 720px) {
   .topbar { gap: calc(var(--u) * 3); padding: calc(var(--u) * 3); }
   .topbar__stats { gap: calc(var(--u) * 4); margin-left: 0; width: 100%; }
-  .topbar__actions { width: 100%; }
+  .topbar__actions { width: 100%; flex-wrap: wrap; }
+  /* The popover would run off a phone-width screen at 300px; let it span the
+     row it is anchored to instead. */
+  .npanel { width: auto; left: 0; right: 0; }
   .quota, .tabs, main, .foot { padding-left: calc(var(--u) * 3); padding-right: calc(var(--u) * 3); }
   .row { flex-direction: column; gap: 3px; }
   .row__k { width: auto; }

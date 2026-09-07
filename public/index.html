@@ -28,6 +28,67 @@
   <div class="topbar__actions">
     <button class="btn" type="button" id="notify-permission">通知を許可</button>
     <button class="btn btn--toggle" type="button" id="notify-toggle" aria-pressed="false">通知 OFF</button>
+    <button class="btn" type="button" id="notify-settings" aria-expanded="false" aria-controls="notify-panel">通知設定</button>
+
+    <section class="npanel" id="notify-panel" aria-label="通知設定" hidden>
+      <h2 class="npanel__h">通知設定</h2>
+      <p class="npanel__note">この設定はこのブラウザにだけ保存される（サーバには送らない）</p>
+
+      <fieldset class="npanel__fs">
+        <legend class="npanel__l">種類</legend>
+        <div class="nrow">
+          <input type="checkbox" id="notify-kind-permission_prompt">
+          <label for="notify-kind-permission_prompt">許可の確認</label>
+        </div>
+        <div class="nrow">
+          <input type="checkbox" id="notify-kind-idle_prompt">
+          <label for="notify-kind-idle_prompt">入力待ち</label>
+        </div>
+        <div class="nrow">
+          <input type="checkbox" id="notify-kind-agent_needs_input">
+          <label for="notify-kind-agent_needs_input">エージェントが入力待ち</label>
+        </div>
+        <div class="nrow">
+          <input type="checkbox" id="notify-kind-agent_completed">
+          <label for="notify-kind-agent_completed">エージェント完了</label>
+        </div>
+        <div class="nrow">
+          <input type="checkbox" id="notify-kind-turn_complete">
+          <label for="notify-kind-turn_complete">ターン完了</label>
+        </div>
+      </fieldset>
+
+      <fieldset class="npanel__fs">
+        <legend class="npanel__l">利用枠のしきい値</legend>
+        <div class="nrow">
+          <input type="checkbox" id="notify-quota-five_hour">
+          <label for="notify-quota-five_hour">5h が</label>
+          <input class="num" type="number" id="notify-quota-five_hour-th" min="1" max="100" step="1" inputmode="numeric">
+          <label class="nrow__u" for="notify-quota-five_hour-th">% を超えたら</label>
+        </div>
+        <div class="nrow">
+          <input type="checkbox" id="notify-quota-seven_day">
+          <label for="notify-quota-seven_day">7d が</label>
+          <input class="num" type="number" id="notify-quota-seven_day-th" min="1" max="100" step="1" inputmode="numeric">
+          <label class="nrow__u" for="notify-quota-seven_day-th">% を超えたら</label>
+        </div>
+      </fieldset>
+
+      <fieldset class="npanel__fs">
+        <legend class="npanel__l">鳴らし方</legend>
+        <div class="nrow">
+          <input type="checkbox" id="notify-quiet">
+          <label for="notify-quiet">この画面を見ている間は鳴らさない</label>
+        </div>
+      </fieldset>
+
+      <p class="npanel__note" id="notify-panel-state" role="status" aria-live="polite"></p>
+
+      <div class="npanel__foot">
+        <button class="btn" type="button" id="notify-test">テスト通知</button>
+        <button class="btn" type="button" id="notify-close">閉じる</button>
+      </div>
+    </section>
   </div>
 </header>
 
@@ -39,7 +100,7 @@
 <nav class="tabs" aria-label="ビュー">
   <button class="tab tab--on" type="button" id="tab-live" data-view="live" aria-current="page">Live</button>
   <button class="tab" type="button" id="tab-tree" data-view="tree">Tree</button>
-  <button class="tab" type="button" id="tab-usage" data-view="usage">Usage<span class="tab__m">M4</span></button>
+  <button class="tab" type="button" id="tab-usage" data-view="usage">Usage</button>
 </nav>
 
 <main id="main">
@@ -151,6 +212,7 @@
   <span id="foot-rev">-</span>
 </footer>
 
+<script src="/notify-rules.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

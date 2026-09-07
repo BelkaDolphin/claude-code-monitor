@@ -63,7 +63,8 @@ hooks/
   monitor-hook.js       hook 側スクリプト (stdin -> events/<日付>.jsonl に1行append)
   statusline.js         statusLine 側スクリプト (sidecar保存 + 1行表示)
 public/
-  index.html            Live / Tree / Usage ビュー (インラインscript/style なし)
+  index.html            Live / Tree / Usage ビュー + 通知設定パネル (インラインscript/style なし)
+  notify-rules.js       通知設定の正規化・移行と枠しきい値の判定 (純粋関数。classic script)
   app.js                DOM差分更新・SSE再接続・Web Notifications・ツリー描画・使用量描画
   style.css             トークン化した配色 (prefers-color-scheme で自動切替)
 ```
@@ -571,6 +572,32 @@ UI の「取込エラー」には数えない（データが壊れている、�
     先頭にしか届かず、ccusage の node が残り続ける（実測で確認）。
     `taskkill /T /F` で木ごと殺している（8.5）。`spawn` する外部コマンドを
     増やすときは同じ問題を毎回考える必要がある。
+
+### 通知設定 で新たに判明した制約
+
+30. **通知設定はブラウザごと・プロファイルごとにしか存在しない。**
+    `localStorage` の `cm.notify.settings` にしか無いので、別のPC・別のブラウザ・
+    シークレットウィンドウでは既定値に戻る。サーバは自分がどう通知されているかを
+    一切知らないため、**「通知したはずなのに来ない」をサーバ側のログから追えない**。
+31. **`localStorage` が使えない環境では設定が保持されない。** アクセスは全て
+    try/catch で包んであるので落ちはしないが、シークレットモードやサイトデータを
+    禁止した設定では毎回既定値（通知 OFF）から始まる。
+32. **しきい値通知は `rate_limits` が出ている間しか動かない。** 既知の制約4/5の
+    とおり `rate_limits` はサブスクリプション限定で、かつ statusline サイドカーが
+    更新されないと消える。**消えた窓は「読めなかった」として武装状態を保つ**ので
+    再接続で鳴り直すことは無いが、逆に**枠が減っていく途中で sidecar が止まると
+    しきい値を超えたことに気づけない**。ダッシュボードが枠を能動的に取りに行く
+    手段は無い（既知の制約4）。
+33. **`public/` に ES module ではない JS が1本増えた。** `public/notify-rules.js` は
+    classic script（`window.CMNotifyRules`）で、`package.json` の `type: module` の
+    下では `import` できない。テストは `fs.readFileSync` + `node:vm` の
+    `runInThisContext` で読み込む（sandbox realm だと `deepStrictEqual` が
+    プロトタイプ違いで落ちるため、**同一 realm で評価する**）。
+    `public/` を増やすときは `src/server.js` の `STATIC_FILES` にも足す必要がある
+    （固定リスト配信。ディレクトリを丸ごと配ってはいない）。
+34. **テスト通知は「実際に通知が出るか」を保証しない。** OS 側の集中モード /
+    サイレント時間 / 通知センターの設定はブラウザから見えない。テスト通知が
+    「出た」ように見えて画面に何も出ないことはあり得る。
 
 ---
 
@@ -1443,3 +1470,142 @@ and the other changed」がこれを固定している（親をキャッシュ�
 - テーブルは**署名が変わった時だけ**組み直す（日付・合計・source・セッション・
   ccusage の取得時刻を並べた文字列）。10秒ごとに DOM を捨てないため。
 - 読み込み中・失敗は必ずテキストノードで出す。空白のペインにはしない。
+
+---
+
+## 9. 通知設定
+
+M2 で決めた「通知はブラウザの Web Notifications API だけ」を維持したまま、
+**何を鳴らすか**をユーザーが決められるようにした回。サーバは1バイトも増えていない
+（`STATIC_FILES` に `notify-rules.js` を足しただけ）。
+
+### 9.1 なぜサーバ側に設定を置かないか
+
+置ける場所はあった（`<monitorDir>/notify.json` と設定エンドポイント）。置かなかった:
+
+- **通知を出すのはブラウザで、サーバではない。** 通知が出るかどうかを最終的に
+  決めるのは OS とブラウザの許可状態で、これはサーバから見えない。
+  設定だけサーバに置くと「サーバは ON と思っているのに何も鳴らない」という
+  食い違いの置き場所が増えるだけになる。
+- **ブラウザごとに違って当然の設定である。** 作業用PCでは全部鳴らし、
+  サブモニタの表示専用タブでは枠の警告だけ、という使い分けは自然だが、
+  サーバに1つ置くとそれができない。
+- **書き込みルートを増やしたくない。** M4 で「GET が書く唯一のファイル」が
+  既に1つできている（既知の制約24）。設定の PUT を足すと、認証とオリジン検証の
+  境界に**状態を変える動詞**が初めて現れる。監視ツールの攻撃面としては割に合わない。
+
+代償は既知の制約30/31（ブラウザを変えると設定も消える）。受け入れた。
+
+### 9.2 データフロー
+
+```
+localStorage['cm.notify.settings']
+        │  (boot 時に1回)
+        ▼
+CMNotifyRules.parse(raw, legacy)  ──► 正規化済み settings
+        │                                  ▲
+        │                                  │ 変更のたびに JSON.stringify して書き戻す
+        ▼                                  │
+   パネルのチェックボックス ────────────────┘
+        
+SSE snapshot ──► render()
+                  ├─ renderQuota(sessions) ──► 描いた rateLimits を返す
+                  ├─ fireNotifications(sessions)   … 種類別 ON/OFF を見る
+                  └─ fireQuotaNotifications(limits, prime)
+                          └─ CMNotifyRules.evaluateQuota(limits, armed, settings, prime)
+                                     └─ {armed, fire[]} ──► notify()
+```
+
+`public/notify-rules.js` は**純粋関数だけ**を持つ classic script で、
+DOM も `localStorage` も `Notification` も触らない。app.js より前に読み込み、
+`window.CMNotifyRules` として使う。テストは同じファイルを `node:vm` で評価する
+（既知の制約33）ので、**ブラウザとテストで別実装になることがない**。
+
+### 9.3 保存形式
+
+キーは1つだけ: `cm.notify.settings`。
+
+```json
+{
+  "v": 1,
+  "enabled": false,
+  "kinds": {
+    "permission_prompt": true, "idle_prompt": true,
+    "agent_needs_input": true, "agent_completed": true,
+    "turn_complete": true
+  },
+  "quota": {
+    "five_hour": { "on": true, "threshold": 80 },
+    "seven_day": { "on": true, "threshold": 80 }
+  },
+  "quietWhenFocused": true
+}
+```
+
+- **既定値は「設定が無かった頃の挙動」と完全に一致させてある。** 通知は OFF で始まり、
+  ONにすれば全種類鳴り、見ている間は黙る。設定を足したこと自体で挙動が変わらない。
+- `kinds` の最初の4つは `src/state.js` の `NOTIFY_TYPES` と同じ。
+  `turn_complete` だけはクライアント固有で、`lastEventName === 'Stop'` から出している
+  （サーバの notification レコードには存在しない）。
+- **`v` は必ず持つ。** 知らない version・壊れた JSON・型の違う値は**黙って既定値に戻す**。
+  監視ツールの通知設定は、直せない形で失敗するより黙って初期値に戻る方がよい。
+  正規化は総当たりで、未知のキーは落とし、既知のキーは1つずつ型を見る。
+  結果として `settings.kinds.<種類>` はガード無しで読める。
+- **旧キー `cm.notify.enabled`（`'1'`/`'0'`）からの移行**は `parse()` の中。
+  新キーが有効ならそちらが勝つ。無効・不在なら既定値を作り、旧キーが `'1'` の時だけ
+  `enabled` を立てる。`parse()` は `migrated` を返し、真なら呼び側が書き戻して
+  旧キーを消す。**移行が「ユーザーが言っていない設定」を発明することはない**
+  （旧キーは ON/OFF しか持っていなかったので、他は全部既定値になる）。
+
+### 9.4 しきい値通知の武装ルール
+
+`evaluateQuota()` の全状態は「窓ごとの `{resetsAt, threshold, fired}`」だけ。
+`fired` を立てるのが通知で、**再武装（`fired` を落とす）は3つの理由でしか起きない**:
+
+1. `resets_at` が変わった —— 枠が転がったので、同じ使用率でも**新しい超過**である。
+2. 使用率がしきい値を下回った —— 次に超えたらまた新しい超過。
+3. ユーザーがしきい値を動かした —— 新しい問いには新しい答えを返す。
+   （80→60 に下げて既に 85% なら、その場で鳴る。それが「60% で教えて」の意味。）
+
+そのほか:
+
+- **窓がスナップショットから消えた場合は状態を据え置く。** `rate_limits` は
+  サイドカーが古くなると普通に消える（既知の制約5）ので、消えたら忘れる実装だと
+  再接続のたびに鳴る。`used_percentage` が数値でない場合も同じく「読めなかった」扱い。
+- **初回スナップショットは `prime`。** 既にしきい値を超えていたら通知せず
+  `fired` だけ立てる。タブを開き直すたびに鳴らないため。既存の
+  `primeNotifications()` と同じ思想。
+- `on: false` の窓は**状態ごと捨てる**。もう一度 ON にしたら、
+  古い判断の続きではなく再武装から始まる。
+- **`spend_limit` は対象外**。金額の上限であって使用量の窓ではなく、
+  再武装に使える `resets_at` を持たない。
+- 通知に使う `rate_limits` は**リボンが描いたものと同じ**。`renderQuota()` が
+  自分の選んだ `rateLimits` を返し、それを渡す。
+  「最新の capture を選ぶ」規則を2箇所に書くと、**画面の数字と通知の数字が
+  食い違い得る**——同じ関数の戻り値を使えばその不整合は構造的に起きない。
+
+### 9.5 フロントエンド
+
+4.8 の制約はそのまま（`innerHTML` 禁止、外部参照ゼロ）。加えて:
+
+- パネルの**markup は index.html に静的に置く**。チェックボックス9個と数値入力2個は
+  完全に固定なので、`createElement` で毎回組み立てる理由が無い。
+  app.js は値の出し入れとイベントの結線だけをする。
+- **コントロールは真実ではない。** 保存されている設定が真実で、
+  パネルを開くたびに `refreshNotifyPanel()` が設定を**コントロールへ押し込む**。
+  逆流は `change` ハンドラの中だけ。
+- 数値入力は `min`/`max` を markup にも持たせるが、**信用はしない**。
+  `change` のたびに `parseThreshold()` に通し、1〜100 の整数でなければ
+  **黙って捨てて保存値を書き戻す**。0 を「常に通知」に丸めるような親切はしない。
+- 位置は `.topbar__actions { position: relative }` に対する `position: absolute`。
+  ヘッダの高さを実測してオフセットに焼くと、ヘッダが折り返した瞬間にずれる。
+- **Esc とパネル外クリックで閉じる**。外クリックの判定から開閉ボタン自身を
+  除外しないと、開いた同じクリックで閉じてしまう。
+- **テスト通知は `canNotify()` を通さない**（`quietWhenFocused` もマスタースイッチも
+  無視する）。押した本人が画面を見ているのは当たり前で、
+  「押しても何も起きないボタン」の方が害が大きい。
+  権限が `default` の時だけ先に `requestPermission()` を呼ぶ
+  （ユーザー操作の中でしか呼べないため、ボタンのハンドラが唯一の呼び場所）。
+- `window.CMNotifyRules` が無い（配信に失敗した）場合は
+  「通知設定」ボタンを `disabled` にし、通知は全て黙る。
+  ルールが読めない状態で既定値をでっち上げて鳴らす方が危ない。

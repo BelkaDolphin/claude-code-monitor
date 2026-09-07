@@ -113,7 +113,17 @@
     'async-unknown': '完了不明'
   };
   var NOTIFY_DEDUPE_MS = 5000;
-  var STORE_KEY = 'cm.notify.enabled';
+  var STORE_KEY = 'cm.notify.settings';
+  /** The pre-settings on/off switch ('1'/'0'). Read once, then migrated away. */
+  var LEGACY_STORE_KEY = 'cm.notify.enabled';
+
+  /**
+   * The pure part of the notification logic, loaded by /notify-rules.js as a
+   * classic script before this one (see 9. 通知設定). Kept in a variable so a
+   * failed load degrades to "no notifications" instead of a ReferenceError on
+   * every snapshot.
+   */
+  var RULES = typeof window.CMNotifyRules === 'object' ? window.CMNotifyRules : null;
 
   /* -------------------------------- state -------------------------------- */
 
@@ -130,7 +140,10 @@
   var seenNotification = new Map();
   /** sessionId -> lastEventAt we already reacted to */
   var seenStop = new Map();
-  var notifyEnabled = readStore() === '1';
+  /** Persisted notification settings; see notify-rules.js for the shape. */
+  var notifySettings = RULES ? RULES.defaults() : fallbackSettings();
+  /** rate-limit window -> {resetsAt, threshold, fired}. Owned by notify-rules.js. */
+  var quotaArmed = {};
   /** Which tab is showing. The tree only refreshes while it is the one on screen. */
   var currentView = 'live';
 
@@ -155,6 +168,21 @@
   }
   function writeStore(v) {
     try { window.localStorage.setItem(STORE_KEY, v); } catch (e) { /* private mode */ }
+  }
+  function readLegacyStore() {
+    try { return window.localStorage.getItem(LEGACY_STORE_KEY); } catch (e) { return null; }
+  }
+  function dropLegacyStore() {
+    try { window.localStorage.removeItem(LEGACY_STORE_KEY); } catch (e) { /* private mode */ }
+  }
+
+  /**
+   * Only reached when /notify-rules.js did not load. Everything off is the safe
+   * answer: a monitor that cannot tell which kinds the user wants must not
+   * decide for them.
+   */
+  function fallbackSettings() {
+    return { v: 0, enabled: false, kinds: {}, quota: {}, quietWhenFocused: true };
   }
 
   function parseMs(iso) {
@@ -344,13 +372,16 @@
 
     document.title = (waitingCount > 0 ? '(' + waitingCount + ') ' : '') + 'claude/monitor';
 
-    renderQuota(data.sessions || []);
+    var limits = renderQuota(data.sessions || []);
     renderCards(data.sessions || []);
     renderFooter(data);
     tick();
 
+    // The first snapshot only records where things stand. Announcing it would
+    // mean a burst of notifications every time the tab reconnects.
     if (firstSnapshotSeen) fireNotifications(data.sessions || []);
     else primeNotifications(data.sessions || []);
+    fireQuotaNotifications(limits, !firstSnapshotSeen);
     firstSnapshotSeen = true;
 
     onSnapshotForTree();
@@ -390,6 +421,12 @@
     return best;
   }
 
+  /**
+   * Draws the ribbon and RETURNS the rate_limits it drew, so the threshold
+   * notifications can use the same "freshest capture" decision instead of
+   * re-deriving one that could disagree with what the user sees.
+   * @returns {object|null}
+   */
   function renderQuota(sessions) {
     var src = freshestRateLimits(sessions);
     var rows = $('quota-rows');
@@ -398,7 +435,7 @@
       empty.hidden = false;
       while (rows.firstChild) rows.removeChild(rows.firstChild);
       gauges.clear();
-      return;
+      return null;
     }
     empty.hidden = true;
     var keys = ['five_hour', 'seven_day', 'spend_limit'];
@@ -430,6 +467,7 @@
       var reset = clockFromEpochSec(w.resets_at);
       setText(g.reset, reset ? ' 復帰 ' + reset : '');
     }
+    return src.rateLimits;
   }
 
   function buildGauge(key) {
@@ -807,12 +845,38 @@
     }
   }
 
+  /**
+   * Load the stored settings, migrating the old on/off key on the way. Called
+   * once from boot(), before anything can fire.
+   */
+  function loadNotifySettings() {
+    if (!RULES) return;
+    var got = RULES.parse(readStore(), readLegacyStore());
+    notifySettings = got.settings;
+    // Nothing stored, or stored under the old key / a broken shape: write the
+    // normalized answer back now, so the next load takes the fast path.
+    if (got.migrated) saveNotifySettings();
+  }
+
+  function saveNotifySettings() {
+    if (!RULES) return;
+    try {
+      writeStore(JSON.stringify(notifySettings));
+    } catch (e) { /* nothing sane to do; the in-memory settings still apply */ }
+    dropLegacyStore();
+  }
+
+  function kindEnabled(kind) {
+    return notifySettings.kinds[kind] === true;
+  }
+
   function canNotify() {
-    if (!notifyEnabled) return false;
+    if (!notifySettings.enabled) return false;
     if (typeof window.Notification === 'undefined') return false;
     if (window.Notification.permission !== 'granted') return false;
     // The user is already looking at the dashboard - do not talk over them.
-    if (document.visibilityState === 'visible' && document.hasFocus()) return false;
+    if (notifySettings.quietWhenFocused
+        && document.visibilityState === 'visible' && document.hasFocus()) return false;
     return true;
   }
 
@@ -851,18 +915,42 @@
       for (var k = startIndex; k < list.length; k++) {
         var n = list[k];
         if (NOTIFY_TYPES.indexOf(n.type) === -1) continue;
+        // The bookkeeping below still advances: a kind the user switched off is
+        // "handled", not "pending until they switch it back on".
+        if (!kindEnabled(n.type)) continue;
         notify(s.sessionId + ':' + n.type, name + ' — ' + (NOTIFICATION_LABEL[n.type] || n.type), n.message || '');
       }
       seenNotification.set(s.sessionId, list.length ? list[list.length - 1].id : lastSeen || null);
 
       if (s.lastEventName === 'Stop' && s.lastEventAt && seenStop.get(s.sessionId) !== s.lastEventAt) {
-        if (seenStop.has(s.sessionId)) {
+        if (seenStop.has(s.sessionId) && kindEnabled('turn_complete')) {
           notify(s.sessionId + ':stop', name + ' — ターン完了', s.cwd || '');
         }
         seenStop.set(s.sessionId, s.lastEventAt);
       } else if (!seenStop.has(s.sessionId)) {
         seenStop.set(s.sessionId, s.lastEventAt || null);
       }
+    }
+  }
+
+  /**
+   * Rate-limit threshold alerts. The decision - and the whole memory of which
+   * window already fired - lives in notify-rules.js; this only turns the
+   * verdict into a Notification.
+   */
+  function fireQuotaNotifications(limits, prime) {
+    if (!RULES) return;
+    var out = RULES.evaluateQuota(limits, quotaArmed, notifySettings, prime === true);
+    quotaArmed = out.armed;
+    for (var i = 0; i < out.fire.length; i++) {
+      var f = out.fire[i];
+      var label = GAUGE_LABEL[f.window] || f.window;
+      var reset = clockFromEpochSec(f.resetsAt);
+      notify(
+        'quota:' + f.window,
+        '利用枠 ' + label + ' が ' + f.threshold + '% を超えた',
+        Math.floor(f.pct) + '% 使用' + (reset ? ' · 復帰 ' + reset : '')
+      );
     }
   }
 
@@ -874,16 +962,158 @@
       permBtn.hidden = true;
       toggle.disabled = true;
       setText(toggle, '通知 非対応');
+      setText($('notify-panel-state'), 'このブラウザは通知に対応していない');
       return;
     }
     var perm = window.Notification.permission;
     permBtn.hidden = perm !== 'default';
-    setText(toggle, notifyEnabled ? '通知 ON' : '通知 OFF');
-    toggle.setAttribute('aria-pressed', notifyEnabled ? 'true' : 'false');
+    setText(toggle, notifySettings.enabled ? '通知 ON' : '通知 OFF');
+    toggle.setAttribute('aria-pressed', notifySettings.enabled ? 'true' : 'false');
     if (perm === 'denied') {
       setText(toggle, '通知 ブロック中');
       toggle.disabled = true;
     }
+    setText($('notify-panel-state'), notifyStateText(perm));
+  }
+
+  /** One line under the panel saying why nothing would be shown right now. */
+  function notifyStateText(perm) {
+    if (!RULES) return '設定モジュールが読み込めていない';
+    if (perm === 'denied') return 'ブラウザが通知をブロックしている（サイト設定で解除する）';
+    if (perm === 'default') return 'まだ通知を許可していない';
+    if (!notifySettings.enabled) return 'マスタースイッチが OFF';
+    return '';
+  }
+
+  /* --------------------------- notification panel -------------------------- */
+
+  function notifyPanelOpen() {
+    return $('notify-panel').hidden === false;
+  }
+
+  function setNotifyPanel(open) {
+    $('notify-panel').hidden = !open;
+    $('notify-settings').setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) refreshNotifyPanel();
+  }
+
+  /** Push the settings INTO the controls. The controls are never the truth. */
+  function refreshNotifyPanel() {
+    if (!RULES) return;
+    var i;
+    for (i = 0; i < RULES.KINDS.length; i++) {
+      var k = RULES.KINDS[i];
+      $('notify-kind-' + k).checked = kindEnabled(k);
+    }
+    for (i = 0; i < RULES.QUOTA_WINDOWS.length; i++) {
+      var w = RULES.QUOTA_WINDOWS[i];
+      var q = notifySettings.quota[w];
+      $('notify-quota-' + w).checked = q.on === true;
+      $('notify-quota-' + w + '-th').value = String(q.threshold);
+    }
+    $('notify-quiet').checked = notifySettings.quietWhenFocused === true;
+    refreshNotifyButtons();
+  }
+
+  function bindNotifyPanel() {
+    var i;
+    if (!RULES) {
+      $('notify-settings').disabled = true;
+      return;
+    }
+    for (i = 0; i < RULES.KINDS.length; i++) bindKindBox(RULES.KINDS[i]);
+    for (i = 0; i < RULES.QUOTA_WINDOWS.length; i++) bindQuotaRow(RULES.QUOTA_WINDOWS[i]);
+
+    $('notify-quiet').addEventListener('change', function () {
+      notifySettings.quietWhenFocused = $('notify-quiet').checked;
+      saveNotifySettings();
+    });
+
+    $('notify-settings').addEventListener('click', function () {
+      setNotifyPanel(!notifyPanelOpen());
+    });
+    $('notify-close').addEventListener('click', function () {
+      setNotifyPanel(false);
+      $('notify-settings').focus();
+    });
+    $('notify-test').addEventListener('click', sendTestNotification);
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || !notifyPanelOpen()) return;
+      setNotifyPanel(false);
+      $('notify-settings').focus();
+    });
+    // A click anywhere outside the panel closes it. The opener is excluded so
+    // its own click is not counted twice (open, then immediately closed).
+    document.addEventListener('click', function (e) {
+      if (!notifyPanelOpen()) return;
+      if ($('notify-panel').contains(e.target)) return;
+      if ($('notify-settings').contains(e.target)) return;
+      setNotifyPanel(false);
+    });
+  }
+
+  /* Each box gets its own closure: `var` in a loop would share one variable. */
+  function bindKindBox(kind) {
+    var box = $('notify-kind-' + kind);
+    box.addEventListener('change', function () {
+      notifySettings.kinds[kind] = box.checked;
+      saveNotifySettings();
+    });
+  }
+
+  function bindQuotaRow(win) {
+    var box = $('notify-quota-' + win);
+    var num = $('notify-quota-' + win + '-th');
+    box.addEventListener('change', function () {
+      notifySettings.quota[win].on = box.checked;
+      saveNotifySettings();
+    });
+    num.addEventListener('change', function () {
+      var n = RULES.parseThreshold(num.value);
+      // Refuse silently and put the stored value back: an empty or out-of-range
+      // box must never read as a threshold the user did not choose.
+      if (n === null) {
+        num.value = String(notifySettings.quota[win].threshold);
+        return;
+      }
+      notifySettings.quota[win].threshold = n;
+      saveNotifySettings();
+    });
+  }
+
+  /**
+   * The test notification deliberately IGNORES quietWhenFocused: the person who
+   * just pressed the button is looking at the tab, and a button that appears to
+   * do nothing is worse than a redundant notification.
+   */
+  function sendTestNotification() {
+    if (typeof window.Notification === 'undefined') return;
+    if (window.Notification.permission === 'default') {
+      var p = window.Notification.requestPermission();
+      if (p && typeof p.then === 'function') {
+        p.then(function () { refreshNotifyButtons(); showTestNotification(); });
+      }
+      return;
+    }
+    showTestNotification();
+  }
+
+  function showTestNotification() {
+    if (window.Notification.permission !== 'granted') {
+      refreshNotifyButtons();
+      return;
+    }
+    try {
+      var n = new window.Notification('claude/monitor — テスト', {
+        body: '通知はこの見た目で出る',
+        tag: 'cm:test'
+      });
+      n.onclick = function () {
+        try { window.focus(); } catch (e) { /* ignore */ }
+        n.close();
+      };
+    } catch (e) { /* browser refused; nothing to do */ }
   }
 
   /* --------------------------------- tree --------------------------------- */
@@ -2016,14 +2246,18 @@
   /* --------------------------------- boot --------------------------------- */
 
   function boot() {
+    // Before any listener can flip a switch: the stored settings ARE the
+    // initial state of every control in the panel.
+    loadNotifySettings();
+
     $('notify-permission').addEventListener('click', function () {
       if (typeof window.Notification === 'undefined') return;
       // requestPermission MUST be called from a user gesture.
       var p = window.Notification.requestPermission();
       if (p && typeof p.then === 'function') {
         p.then(function () {
-          notifyEnabled = window.Notification.permission === 'granted';
-          writeStore(notifyEnabled ? '1' : '0');
+          notifySettings.enabled = window.Notification.permission === 'granted';
+          saveNotifySettings();
           refreshNotifyButtons();
         });
       } else {
@@ -2032,15 +2266,17 @@
     });
 
     $('notify-toggle').addEventListener('click', function () {
-      notifyEnabled = !notifyEnabled;
-      writeStore(notifyEnabled ? '1' : '0');
-      if (notifyEnabled && typeof window.Notification !== 'undefined'
+      notifySettings.enabled = !notifySettings.enabled;
+      saveNotifySettings();
+      if (notifySettings.enabled && typeof window.Notification !== 'undefined'
           && window.Notification.permission === 'default') {
         var p = window.Notification.requestPermission();
         if (p && typeof p.then === 'function') p.then(refreshNotifyButtons);
       }
       refreshNotifyButtons();
     });
+
+    bindNotifyPanel();
 
     var tabs = ['live', 'tree', 'usage'];
     tabs.forEach(function (name) {
