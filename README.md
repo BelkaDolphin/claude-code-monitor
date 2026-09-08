@@ -448,7 +448,7 @@ node src/cli.js stats 11111111
 ## テスト
 
 ```bash
-npm test                                  # 単体テスト（合成fixtureのみ、実データ不要）
+npm test                                  # 単体テスト（合成fixtureのみ、実データ不要。Windows 前提）
 
 # 統合テスト（実データを読み、インストール済みの ccusage を npx で起動する）
 CLAUDE_MONITOR_IT=1 node --test test/integration.test.js

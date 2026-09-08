@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest]
         node: [20, 24]
     steps:
       - uses: actions/checkout@v4
@@ -20,4 +20,6 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       # No dependencies to install: the project uses Node built-ins only.
+      # Windows only: the installer, autostart and tray tests exercise
+      # Windows paths, .vbs launchers and schtasks.
       - run: npm test
