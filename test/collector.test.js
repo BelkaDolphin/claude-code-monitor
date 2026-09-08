@@ -131,7 +131,9 @@ describe('collector: day rollover', () => {
 
   test('reads yesterday too when it starts just after midnight', async () => {
     const d = dirs(tmp.dir);
-    const now = new Date(2026, 8, 3, 0, 30, 0); // 00:30 local
+    // 00:10 local: inside SESSION_STALE_MS of the event below. start() sweeps,
+    // and an idle session with no PID goes stale after 30 minutes of silence.
+    const now = new Date(2026, 8, 3, 0, 10, 0);
     const yesterday = new Date(2026, 8, 2, 23, 59, 0);
     appendJsonl(path.join(d.events, `${localDateKey(yesterday)}.jsonl`), [
       { ...hookLine('SessionStart'), receivedAt: yesterday.toISOString() },

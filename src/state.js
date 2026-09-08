@@ -43,8 +43,9 @@
  * no hook phase, no sessions/<pid>.json and phase `unknown`; counting them as
  * live is how the header came to read "3 稼働" with one session running.
  *
- * `stale` is the session-level twin of the agent sweep: hooks said busy, no
- * SessionEnd ever came, and neither a PID nor the transcript says otherwise.
+ * `stale` is the session-level twin of the agent sweep: hooks said busy (or
+ * idle, after a Stop), no SessionEnd ever came, and neither a PID nor the
+ * transcript says otherwise.
  * It is INFERENCE (`phaseSource: 'inferred'`) and any later hook event undoes
  * it - see touchSession.
  *
@@ -120,6 +121,17 @@ export const SESSION_STALE_MS = 30 * 60 * 1000;
 
 /** hookPhases that claim the session is working right now. */
 const HOOK_LIVE_PHASES = new Set(['busy', 'waiting_permission', 'waiting_input', 'compacting']);
+
+/**
+ * hookPhases the stale sweep may take down. 'idle' is included even though it
+ * claims no work: isLive() counts a hooks-sourced idle as 稼働, and a session
+ * whose last event was a Stop and whose process then died without a
+ * SessionEnd (window closed, machine rebooted, monitor restarted after the
+ * sessions/<pid>.json was gone) would otherwise sit in the live list forever.
+ * Measured: 77b69db3's last event was a Stop at 2026-09-06T15:34 and it was
+ * still "live" two days later.
+ */
+const HOOK_SWEEP_PHASES = new Set([...HOOK_LIVE_PHASES, 'idle']);
 
 /** Longest prompt excerpt kept in state; the UI trims further. */
 const MAX_PROMPT_CHARS = 200;
@@ -922,11 +934,11 @@ export function sweepStale(state, opts = {}) {
       dirty = true;
     }
 
-    // A session whose hooks stopped mid-turn. `alive === true` is checked
-    // first and is absolute: a PID we watched answer outranks any amount of
-    // silence, and sweeping it would put a session the user is typing into
-    // behind "停止推定".
-    if (s.alive !== true && HOOK_LIVE_PHASES.has(s.hookPhase)) {
+    // A session whose hooks stopped mid-turn, or that went idle and was then
+    // never heard from again. `alive === true` is checked first and is
+    // absolute: a PID we watched answer outranks any amount of silence, and
+    // sweeping it would put a session the user is typing into behind "停止推定".
+    if (s.alive !== true && HOOK_SWEEP_PHASES.has(s.hookPhase)) {
       const lastSeen = tsOf(s.lastEventAt) ?? tsOf(s.startedAt);
       const quiet = lastSeen !== null && now - lastSeen > sessionStaleMs;
       // The transcript is the same positive evidence the agent rule uses: a
@@ -937,7 +949,9 @@ export function sweepStale(state, opts = {}) {
         s.phaseBeforeStale = s.hookPhase;
         s.hookPhase = 'stale';
         s.staleAt = new Date(now).toISOString();
-        s.staleReason = `no hook event for ${Math.round(sessionStaleMs / 60000)} min, PID unknown`;
+        s.staleReason = s.phaseBeforeStale === 'idle'
+          ? `idle with no hook event for ${Math.round(sessionStaleMs / 60000)} min, PID unknown`
+          : `no hook event for ${Math.round(sessionStaleMs / 60000)} min, PID unknown`;
         sessionsStale += 1;
         dirty = true;
       }

@@ -442,8 +442,16 @@ Claude Code が落ちる・端末が閉じる・マシンが再起動すると `
 あること、そしてエージェントと違ってセッションには `SubagentStop` に
 相当する代替の終端イベントが無いことによる。
 
-`idle` は掃かない。`idle` は「今作業している」という主張ではないので、
-放置されていても嘘にならない。
+`idle` も掃く（2026-09-08 に変更）。`idle` 自体は「今作業している」という
+主張ではないが、`isLive()` は hooks 由来の `idle` を稼働に数える。最後の
+イベントが `Stop` で、そのあとウィンドウが閉じられて `SessionEnd` が来ず、
+`sessions/<pid>.json` も消えた後にモニタが再起動すると、`alive` は `null` の
+まま `idle` が稼働一覧に永久に残る。実測: `77b69db3` の最後のイベントは
+2026-09-06T15:34 の `Stop` で、2日後も「稼働」だった。条件は busy と同じ
+三重（30分無音・`alive !== true`・transcript 不動）で、`staleReason` は
+`idle with no hook event for 30 min, PID unknown` になる。開いたままの
+idle ウィンドウは `sessions/<pid>.json` が `alive === true` を保証するので
+掃かれない。
 
 `stale` は UI では「停止推定」。`ended`（本当に終わった）とも
 `dead`（PIDが無い）とも別の語にしてある——これは推定であって事実ではない。

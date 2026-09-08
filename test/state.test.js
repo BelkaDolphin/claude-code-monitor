@@ -1021,11 +1021,47 @@ describe('session stale sweep (live count fix 2026-09-06)', () => {
     assert.equal(derivePhase(r.state.sessions[SID]).phase, 'ended', 'ended stays ended, never stale');
   });
 
-  test('an idle session is not swept: idle is not a claim that work is running', () => {
-    const idle = play([ev('SessionStart', { receivedAt: at(0) }), ev('Stop', { receivedAt: at(0) })]);
-    const r = sweepStale(idle, { now: T0 + 10 * 60 * MIN });
+  /** Answered its last prompt, then the window was closed: a Stop, then nothing. */
+  const abandoned = () => play([ev('SessionStart', { receivedAt: at(-1 * MIN) }), ev('Stop', { receivedAt: at(0) })]);
+
+  test('an idle session is swept too: isLive counts it, so it cannot stay forever', () => {
+    const before = abandoned();
+    assert.equal(buildSnapshot(before).counts.live, 1, 'a hooks-sourced idle is live');
+
+    const early = sweepStale(before, { now: T0 + 29 * MIN });
+    assert.equal(early.sessionsStale, 0, 'inside the window it is just idle');
+
+    const r = sweepStale(before, { now: T0 + 10 * 60 * MIN });
+    assert.equal(r.sessionsStale, 1);
+    const s = buildSnapshot(r.state).sessions[0];
+    assert.equal(s.phase, 'stale');
+    assert.equal(s.phaseSource, 'inferred');
+    assert.equal(s.staleReason, 'idle with no hook event for 30 min, PID unknown');
+    assert.equal(buildSnapshot(r.state).counts.live, 0);
+  });
+
+  test('an idle session with a live PID is never swept - the window is open', () => {
+    const alive = applySessions(abandoned(), [{ sessionId: SID, pid: 54232, alive: true }]).state;
+    const r = sweepStale(alive, { now: T0 + 10 * 60 * MIN });
     assert.equal(r.sessionsStale, 0);
-    assert.equal(derivePhase(r.state.sessions[SID]).phase, 'idle');
+    assert.equal(buildSnapshot(r.state).sessions[0].phase, 'idle');
+  });
+
+  test('an idle session whose transcript still moves is not swept', () => {
+    const now = T0 + 40 * MIN;
+    const r = sweepStale(abandoned(), { now, sessionFileMtimes: () => now - 1 * MIN });
+    assert.equal(r.sessionsStale, 0);
+  });
+
+  test('a swept idle session comes back as idle on the next hook event', () => {
+    const stale = sweepStale(abandoned(), { now: T0 + 40 * MIN }).state;
+    assert.equal(stale.sessions[SID].hookPhase, 'stale');
+    const revived = reduce(stale, ev('UserPromptSubmit', { prompt: 'hi', receivedAt: at(45 * MIN) })).state;
+    // UserPromptSubmit moves it to busy on its own; what matters is that stale is gone.
+    const s = revived.sessions[SID];
+    assert.notEqual(s.hookPhase, 'stale');
+    assert.equal(s.staleAt, null);
+    assert.equal(buildSnapshot(revived).counts.live, 1);
   });
 
   test('waiting_permission is swept too - nobody is there to answer it', () => {
