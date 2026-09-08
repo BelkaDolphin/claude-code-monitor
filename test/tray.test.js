@@ -11,7 +11,7 @@
  *
  * The end-to-end behaviour these cannot reach - that the icon appears, that a
  * killed server is restarted, that tray-stop leaves nothing alive - was
- * measured by hand; see docs/autostart-verification.md.
+ * measured by hand.
  */
 
 import { test, describe, before, after } from 'node:test';

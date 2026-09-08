@@ -22,7 +22,7 @@
  * Failure policy: every read is wrapped. A failure increments a counter in
  * stats() and the loop continues. Files that vanish between enumeration and
  * read are expected (Claude Code prunes transcripts on its own schedule) and
- * are counted as `skippedFiles`, exactly as M1's aggregators do.
+ * are counted as `skippedFiles`, exactly as the usage aggregators do.
  */
 
 import fs from 'node:fs';
@@ -446,7 +446,7 @@ export class Collector extends EventEmitter {
     this.indexBySession = new Map(index.sessions.map((s) => [s.sessionId, s]));
 
     // Claude Code deletes transcripts older than ~30 days on its own schedule
-    // (measured in M1: 171 files -> 146 mid-session). Their byte offsets would
+    // (measured: 171 files -> 146 mid-session). Their byte offsets would
     // otherwise sit in JsonlTail.states for the life of the process.
     const present = new Set();
     for (const entry of index.sessions) {

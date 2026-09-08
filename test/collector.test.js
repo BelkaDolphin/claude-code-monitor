@@ -749,7 +749,7 @@ describe('collector: ghosts and agent identity (browser review 2026-09-03)', () 
         path.join(subs, 'agent-ag1.meta.json'),
         JSON.stringify({
           agentType: 'general-purpose',
-          description: 'Implement M2 server and Live view',
+          description: 'Implement the server and Live view',
           spawnDepth: 1,
           model: 'opus',
         }),
@@ -765,11 +765,11 @@ describe('collector: ghosts and agent identity (browser review 2026-09-03)', () 
       await c.start();
       try {
         const agent = c.snapshot().sessions[0].agents[0];
-        assert.equal(agent.description, 'Implement M2 server and Live view');
+        assert.equal(agent.description, 'Implement the server and Live view');
         assert.equal(agent.agentType, 'general-purpose');
         assert.equal(agent.model, 'opus');
         assert.equal(agent.modelSource, 'meta');
-        assert.equal(agent.label, 'Implement M2 server and Live view（general-purpose）');
+        assert.equal(agent.label, 'Implement the server and Live view（general-purpose）');
         // The agent transcript is fresh, so it is not swept away.
         assert.equal(c.snapshot().counts.agentsRunning, 1);
       } finally {
@@ -792,7 +792,7 @@ describe('collector: ghosts and agent identity (browser review 2026-09-03)', () 
       // Real depth-2 metas have no `model` (measured: 1 of 7 here).
       fs.writeFileSync(
         path.join(subs, 'agent-ag2.meta.json'),
-        JSON.stringify({ agentType: 'feature-dev:code-reviewer', description: 'Review M2 code', spawnDepth: 2 }),
+        JSON.stringify({ agentType: 'feature-dev:code-reviewer', description: 'Review server code', spawnDepth: 2 }),
         'utf8',
       );
       fs.writeFileSync(
@@ -816,7 +816,7 @@ describe('collector: ghosts and agent identity (browser review 2026-09-03)', () 
         const agent = c.snapshot().sessions[0].agents[0];
         assert.equal(agent.model, 'claude-sonnet-5');
         assert.equal(agent.modelSource, 'transcript');
-        assert.equal(agent.label, 'Review M2 code（feature-dev:code-reviewer）');
+        assert.equal(agent.label, 'Review server code（feature-dev:code-reviewer）');
       } finally {
         c.stop();
       }

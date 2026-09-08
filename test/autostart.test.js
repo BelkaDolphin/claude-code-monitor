@@ -4,8 +4,8 @@
  * NOTHING here talks to the real Task Scheduler: every schtasks call goes
  * through an injected runner, and the launcher is written into a temp dir. The
  * one thing that cannot be unit-tested is whether Windows accepts the argv we
- * build - that was verified by running the generated .vbs by hand (see
- * docs/m3-verification.md); registration itself is the user's call.
+ * build - that was verified by running the generated .vbs by hand;
+ * registration itself is the user's call.
  */
 
 import { test, describe, before, after } from 'node:test';

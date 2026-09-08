@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * claude-monitor CLI (M1 core - no UI).
+ * claude-monitor CLI (no UI).
  *
  * Every subcommand supports --json for machine-readable output.
  */
@@ -1416,8 +1416,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * DETACHED_PROCESS, which leaves powershell.exe with no console at all and it
  * dies before running a line; and without `detached` it dies as soon as this
  * process does. wscript.exe's `Run(cmd, 0, False)` hands the command to the
- * shell and returns, leaving a host with no parent to lose. Measured both ways;
- * see docs/autostart-verification.md.
+ * shell and returns, leaving a host with no parent to lose. Measured both ways.
  */
 function planTray(args) {
   const port = resolvePort(portFlag(args));

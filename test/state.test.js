@@ -634,16 +634,16 @@ describe('agent identity and model (browser review 2026-09-03)', () => {
     state = applyAgentMeta(state, SID, [{
       agentId: 'a25952fdd8897146a',
       agentType: 'general-purpose',
-      description: 'Implement M2 server and Live view',
+      description: 'Implement the server and Live view',
       model: 'opus',
       modelSource: 'meta',
     }]).state;
     const a = buildSnapshot(state).sessions[0].agents[0];
-    assert.equal(a.description, 'Implement M2 server and Live view');
+    assert.equal(a.description, 'Implement the server and Live view');
     assert.equal(a.agentType, 'general-purpose');
     assert.equal(a.model, 'opus');
     assert.equal(a.modelSource, 'meta');
-    assert.equal(a.label, 'Implement M2 server and Live view（general-purpose）');
+    assert.equal(a.label, 'Implement the server and Live view（general-purpose）');
   });
 
   test('with no meta.json the transcript model is used instead', () => {
@@ -848,7 +848,7 @@ describe('session start and end times', () => {
  * long-finished sessions were in the header, in the card list, and in the tree
  * list with 稼働中 where an end time belonged.
  */
-describe('liveness needs positive evidence (live count fix 2026-09-06)', () => {
+describe('liveness needs positive evidence', () => {
   const OLD = 'b5824c60-6421-43c7-848c-1095bc09436d';
 
   /** Exactly what readSidecars hands applyStatusline for an old file. */
@@ -925,7 +925,7 @@ describe('liveness needs positive evidence (live count fix 2026-09-06)', () => {
  * Measured: ea1b82f5's last event is a PostToolUse at 2026-09-02T23:59:50 and
  * it read "busy" for four days.
  */
-describe('session stale sweep (live count fix 2026-09-06)', () => {
+describe('session stale sweep', () => {
   const T0 = Date.UTC(2026, 8, 2, 23, 59, 50);
   const MIN = 60 * 1000;
   const at = (ms) => new Date(T0 + ms).toISOString();

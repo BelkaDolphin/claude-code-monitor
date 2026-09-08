@@ -1,4 +1,4 @@
-# claude-monitor アーキテクチャ (M1 コア + M2 サーバ/Live + M3 ツリービュー + 常駐化)
+# claude-monitor アーキテクチャ
 
 対象バージョン: Claude Code 2.1.258 / Node.js 20+ (検証は v24.13.0) / Windows 11。
 外部npm依存ゼロ（Node標準モジュールのみ）。ESM。
@@ -39,19 +39,19 @@ src/
   ccusage.js            ccusage CLI ラッパ (突合専用)
   cli.js                サブコマンド群
 
-  --- M2 で追加 ---
+  --- 常駐サーバ / Live ビュー ---
   auth.js               トークン発行・Cookie・Host/Origin/Sec-Fetch-Site 検証
   state.js              状態モデル (純粋関数。hooks/sessions/statusline/jsonl を1つに)
   collector.js          4つの源の tail・ポーリング・デバウンス (EventEmitter)
   sse.js                SSE 配信ハブ (最大8接続、15秒ping)
   server.js             127.0.0.1 固定の HTTP サーバとルーティング
 
-  --- M3 で追加 ---
+  --- ツリービュー ---
   tree-merge.js         hooks / meta.json / transcript を1本のツリーに合成 (純粋関数)
   tree-view.js          ツリービューの I/O とキャッシュ
                         (TreeCache / SessionIndexCache / HookHistory)
 
-  --- M4 で追加 ---
+  --- Usage ビュー ---
   usage-view.js         Usage ビューの I/O とキャッシュ
                         (UsageFileCache = ファイル毎の message マップ / UsageStore /
                          CcusageCache = 10分キャッシュ + single-flight)
@@ -91,7 +91,7 @@ Claude Code
 
 書き込み先は **`%USERPROFILE%\.claude-monitor\`** のみ（`CLAUDE_MONITOR_DIR` で上書き可）。
 `~/.claude` 配下は `install-hooks` が `settings.json` を更新する場合を除き読み取り専用。
-M4 で `<monitorDir>/usage/daily.json` が加わった —— **GET リクエストが書く唯一のファイル**である（8.4）。
+Usage ビューで `<monitorDir>/usage/daily.json` が加わった —— **GET リクエストが書く唯一のファイル**である（8.4）。
 
 ---
 
@@ -105,7 +105,7 @@ M4 で `<monitorDir>/usage/daily.json` が加わった —— **GET リクエス
 Claude Code は1つのassistantメッセージについて、ストリーミング途中のusage
 スナップショットと最終値の両方をjsonlに書く。「最初の1件」を採用すると
 実測で output_tokens が 522,600 対 2,334,305（4.5倍の過小集計）になる。
-`docs/m0-local-findings.md` 参照。dedupeは**ファイル横断**で行う
+dedupeは**ファイル横断**で行う
 （親transcriptとsidechainコピーに同じmessage.idが現れるため）。
 
 ### 3.2 ストリーミング読み
@@ -223,7 +223,7 @@ Claude Code がそのままシェルに渡すので、ここに埋めるパス�
 
 ---
 
-## 4. M2: 常駐サーバと Live ビュー
+## 4. 常駐サーバと Live ビュー
 
 ### 4.1 データフロー
 
@@ -296,7 +296,7 @@ I/O 失敗は全て `collector.stats()` のカウンタに積み、処理は継�
 
 ### 4.3 状態機械
 
-`phase` は hooks から導出する。`phaseSource` で根拠を明示する（M1 の `statusInferred` と同じ流儀）。
+`phase` は hooks から導出する。`phaseSource` で根拠を明示する（コアの `statusInferred` と同じ流儀）。
 
 #### events/ の保持と、日跨ぎの読み方
 
@@ -368,8 +368,7 @@ timestamp が UTC で、日跨ぎ付近で両者の日付がずれるため。
 ファイルの数だけセッションを作る（実測: 稼働1本に対しファイル5個）。
 それらは hook も PID も無く `phase: "unknown"` / `phaseSource: "none"`
 ——「このセッションのことは何も聞いたことがない」という状態で、
-ヘッダに「5 稼働」と出していた（詳細は
-[docs/live-count-fix.md](live-count-fix.md)）。
+ヘッダに「5 稼働」と出していた。
 
 `unknown` という phase 自体は残す（UIは「不明」と出せる）。
 稼働かどうかと、何と表示するかは別の問いである。
@@ -442,11 +441,11 @@ Claude Code が落ちる・端末が閉じる・マシンが再起動すると `
 あること、そしてエージェントと違ってセッションには `SubagentStop` に
 相当する代替の終端イベントが無いことによる。
 
-`idle` も掃く（2026-09-08 に変更）。`idle` 自体は「今作業している」という
+`idle` も掃く。`idle` 自体は「今作業している」という
 主張ではないが、`isLive()` は hooks 由来の `idle` を稼働に数える。最後の
 イベントが `Stop` で、そのあとウィンドウが閉じられて `SessionEnd` が来ず、
 `sessions/<pid>.json` も消えた後にモニタが再起動すると、`alive` は `null` の
-まま `idle` が稼働一覧に永久に残る。実測: `77b69db3` の最後のイベントは
+まま `idle` が稼働一覧に永久に残る。実測: `22222222` の最後のイベントは
 2026-09-06T15:34 の `Stop` で、2日後も「稼働」だった。条件は busy と同じ
 三重（30分無音・`alive !== true`・transcript 不動）で、`staleReason` は
 `idle with no hook event for 30 min, PID unknown` になる。開いたままの
@@ -465,7 +464,7 @@ idle ウィンドウは `sessions/<pid>.json` が `alive === true` を保証す�
 stale にしてしまう。
 
 推定は推定として表示する（UI は `✓` ではなく `?` と「終了と推定」）。
-M1 の `statusInferred` / `statusSource` と同じ流儀。
+コアの `statusInferred` / `statusSource` と同じ流儀。
 
 ### 4.6 表示に使う名前と値の出どころ
 
@@ -546,7 +545,7 @@ UI の「取込エラー」には数えない（データが壊れている、�
    壊れるが、**自前集計には一切影響しない**（突合は検証専用で、表示している
    数字は常に自分で数えたものである）。
 
-### M2 で新たに判明した制約
+### 常駐サーバで新たに判明した制約
 
 9. **`SubagentStart` は `SubagentStop` より圧倒的に少ない。** 実測（2026-09-02、
    実データ 203イベント）で `SubagentStop` 29件に対し `SubagentStart` は **1件**。
@@ -556,8 +555,8 @@ UI の「取込エラー」には数えない（データが壊れている、�
    `startedAt` が null のまま残る。`state.js` は
    `PreToolUse`（agent_id 付き）の初回でも `startedAt` を補うが、それも無ければ
    経過時間は出せない。**サブエージェントの種類と開始時刻を確実に取るには
-   transcript の `meta.json`（M1 の `session-index.listSubagents`）が要る** ——
-   M3 のツリービューではそちらを併用すること。
+   transcript の `meta.json`（`session-index.listSubagents`）が要る** ——
+   ツリービューではそちらを併用すること。
 10. **稼働セッションの transcript は初回に全読みする。** `message.id` 単位の
     dedupe（3.1）は「最後に現れた行が正」なので、途中から読み始めると
     集計が壊れる。35MB のファイルなら初回だけ 1〜2 秒かかる。
@@ -569,7 +568,7 @@ UI の「取込エラー」には数えない（データが壊れている、�
     `style-src 'self'` は `style=` 属性の**マークアップ上の記述**を禁じるが、
     CSSOM での設定は CSP の対象外。`setAttribute('style', ...)` は使わない。
 
-### M3 で新たに判明した制約
+### ツリービューで新たに判明した制約
 
 13. **サブエージェントの transcript は親より先に消える。** 実測（2026-09-03）で、
     セッション `11111111` の hooks は31体のエージェントを知っているのに
@@ -589,8 +588,8 @@ UI の「取込エラー」には数えない（データが壊れている、�
 
 ### 常駐化 で新たに判明した制約
 
-以下はコードを読んで確定させたか、`install-autostart --dry-run` を実行して観測したものだけ。
-実登録（`schtasks /Create`）はまだ一度もしていない（`docs/autostart-verification.md`）。
+以下はコードを読んで確定させたか、`install-autostart --dry-run` と、実登録後の
+ログオン起動で観測したもの。
 
 16. **落ちても自動では復帰しない。** Task Scheduler の ONLOGON トリガーは「ログオンした」
     ときにしか発火しない。4.7 の設計で uncaught は exit 1 で終わるので、そこから
@@ -623,10 +622,10 @@ UI の「取込エラー」には数えない（データが壊れている、�
     （ダッシュボードは読み取り専用）。`uninstall-autostart` はタスクと `.vbs` を消すだけで、
     今動いているサーバは止めない。
 
-### M4 で新たに判明した制約
+### Usage ビューで新たに判明した制約
 
 23. **モデル名の表が実データに追いついていなかった。** 2026-09-06 に実 transcript を
-    数えたところ、M3 の `MODEL_LABEL` に無い ID が2つ出た ——
+    数えたところ、ツリービューの `MODEL_LABEL` に無い ID が2つ出た ——
     `claude-fable-5-1`（25.7M トークン / 216 メッセージ）と
     `claude-opus-4-7`（2.1M / 43）。表駆動である以上、**新しいモデルが出るたびに
     2つの表（`src/usage-view.js` の `MODEL_SERIES` と `public/app.js` の
@@ -748,7 +747,7 @@ UI の「取込エラー」には数えない（データが壊れている、�
 
 ---
 
-## 6. M3: ツリービュー
+## 6. ツリービュー
 
 ### 6.1 データフロー
 
@@ -793,7 +792,7 @@ hooks 由来の半分（実行中／完了、`currentTool`）は毎秒変わる�
 ### 6.2 マージの優先順位
 
 `src/tree-merge.js`。各フィールドは `*Source` を併せて返し、UI が
-「← meta.json」「← hooks」の形でそのまま出す。M1 の `statusInferred` /
+「← meta.json」「← hooks」の形でそのまま出す。コアの `statusInferred` /
 `statusSource` と同じ流儀で、**推定は推定として表示する**。
 
 | フィールド | 優先順位 | 根拠 |
@@ -922,7 +921,7 @@ transcript の最後の時刻は `session-index.readLastTimestamp` が**末尾 6
 ## 7. 常駐化: 永続トークン・ログファイル・自動起動
 
 「ログオンしたら勝手に立ち上がっていて、ブックマーク1つで開ける」状態にするための3点セット。
-どれも**任意**で、既定の挙動（前景起動・プロセス毎トークン・ログ無し）は M2 から変えていない。
+どれも**任意**で、既定の挙動（前景起動・プロセス毎トークン・ログ無し）は常駐化前から変えていない。
 
 ### 7.1 永続トークン
 
@@ -1087,7 +1086,7 @@ HMAC も鍵導出も無い（`safeEqual` が SHA-256 に通すのは長さを揃
 `serve` は `--log-file` を渡したときだけログを開く（`pathFlag` は未指定で `null`）。
 `--log-file` を末尾に置いた場合と `--log-file=`（空の値）はどちらも既定パスとして扱う ——
 ログを求めた人に「黙ってログ無し」を返さないため。
-前景で手で起動したときの既定はログ無しで、M2 までと同じ挙動である。
+前景で手で起動したときの既定はログ無しで、常駐化前と同じ挙動である。
 
 ### 7.3 自動起動
 
@@ -1257,10 +1256,9 @@ dry-run はプラットフォーム判定より前に return するので Window
    諦め、もう1世代分育つまで再試行しない（`retryRotateAtBytes`）。
    同じファイルに追記している他プロセスの行を捨てるよりは、太ったログの方が小さい失敗である。
    また `maxBytes` を超える単一チャンクは `...[truncated N bytes]` を付けて切られる。
-9. **実登録の確認がまだ無い。** `schtasks /Create` の成功、ログオン時に本当に窓が出ないこと
-   —— これらは**設計意図であって観測結果ではない**。
-   確認手順は `docs/autostart-verification.md` 第5章、未確認の一覧は同第6章にある。
-   （BOM 無しで日本語パスが壊れることは、その後**実際に観測した**。同 第8章。）
+9. **実登録は確認済み。** `schtasks /Create` が通り、ログオン時に `autostart.vbs` 経由で
+   トレイホストとサーバが起動して稼働し続けることは実機で観測した。
+   BOM 無しで日本語パスが壊れることも**実際に観測した**（7.3）。
 
 ### 7.5 トレイ常駐
 
@@ -1282,8 +1280,7 @@ wscript.exe (autostart.vbs)                    ← コンソールを持たな�
 できないバイナリが1つ増える）。`System.Windows.Forms` の `NotifyIcon` は Windows 11 に
 最初から在り、アイコンは 16x16 の `Bitmap` に円を描いて `GetHicon()` すれば実行時に作れる。
 代償は**STA でなければならない**こと（`NotifyIcon` はメッセージループを要求する）と、
-`-WindowStyle Hidden` が要ること。両方とも本実装の前にプロトタイプで確かめてある
-（`docs/autostart-verification.md` 第8章）。
+`-WindowStyle Hidden` が要ること。両方とも本実装の前にプロトタイプで確かめてある。
 
 **なぜ UTF-8 BOM 付きか。** 7.3 の `.vbs` と同じ理由が、別の言語で繰り返される。
 Windows PowerShell 5.1 は BOM の無い `.ps1` を**システムの ANSI コードページ**
@@ -1460,11 +1457,10 @@ powershell.exe はコンソールを一切持てずに**1行も実行せずに�
 `wscript.exe` の `Run(cmd, 0, False)` はコマンドをシェルに投げて戻るので、
 **失う親が居ないホスト**が残る。7.3 の launcher がやっているのと同じことなので、
 `tray` は同じ `.vbs` を書いて wscript に渡し、読み終わった launcher を消す。
-測定結果は `docs/autostart-verification.md` 第8章にある。
 
 ---
 
-## 8. M4: Usage ビュー
+## 8. Usage ビュー
 
 ### 8.1 データフロー
 
@@ -1492,12 +1488,12 @@ hooks にもイベントにも現れず、jsonl の `message.usage` にしか無
 ```
 
 `src/usage.js`（純粋な集計）と `src/usage-view.js`（I/O とキャッシュ）に分けてある。
-M3 で `tree.js` / `tree-merge.js` と `tree-view.js` を分けたのと同じ理由で、
+ツリービューで `tree.js` / `tree-merge.js` と `tree-view.js` を分けたのと同じ理由で、
 ディスクに触る側だけを差し替えてテストできるようにするため。
 
 ### 8.2 なぜキャッシュが「ファイルごとの合計」ではなく「ファイルごとの message マップ」なのか
 
-**これが M4 で唯一まちがえてはいけない設計判断である。**
+**これが Usage ビューで唯一まちがえてはいけない設計判断である。**
 
 dedupe（3.1）は**ファイル横断**で効く。同じ `message.id` が親 transcript と
 sidechain コピーの両方に書かれ、**timestamp が新しい方の1件だけ**が正しい。
@@ -1519,7 +1515,7 @@ and the other changed」がこれを固定している（親をキャッシュ�
 
 ### 8.3 期間の窓と、開かないファイル
 
-- `?days=N`（既定30・1〜90にクランプ）。クランプは M3 の `clampInt` /
+- `?days=N`（既定30・1〜90にクランプ）。クランプはツリービューの `clampInt` /
   `DEFAULT_DAYS` / `MIN_DAYS` / `MAX_DAYS` をそのまま使う。
 - 窓は **LOCAL の暦日**で「今日を含む N 日」。`days=30` なら `today-29 … today`。
   ローリング 30×24h ではない（`/api/sessions` の mtime カットオフとはここが違う）。
@@ -1608,7 +1604,7 @@ and the other changed」がこれを固定している（親をキャッシュ�
 | `GET /api/usage?days=N` | 期間の日別・モデル別・セッション別。`days` 既定30・1〜90にクランプ |
 | `GET /api/usage/ccusage?days=N` | 同じ窓を ccusage と突合（要求時のみ実行） |
 
-- `/api/usage/` 配下のそれ以外は M3 と同じ **404 JSON**（400 と書き分けない）。
+- `/api/usage/` 配下のそれ以外はツリービューの API と同じ **404 JSON**（400 と書き分けない）。
 - 認証・Origin・Host・`Sec-Fetch-Site` は既存ルートと同じ。GET/HEAD 以外は 405。
 - `/api/usage` は同期なので `guard()`、`/api/usage/ccusage` は Promise を返すので
   **`guardAsync()`**。前者のままだと reject が `unhandledRejection` に落ち、
@@ -1654,7 +1650,7 @@ and the other changed」がこれを固定している（親をキャッシュ�
   `source: 'store'` は「保存値」、`partial` は「一部欠損」バッジ。
 - SSE の `snapshot` で再取得するが、**10秒デバウンス**（ツリーの2秒より重い。
   1回で全 transcript を読むため）、**Usage タブが見えている間だけ**、
-  かつ**タイマー発火時にもう一度可視判定をする**（8.3 の M3 レビュー指摘と同じ）。
+  かつ**タイマー発火時にもう一度可視判定をする**（8.3 のレビュー指摘と同じ）。
 - 期間は `localStorage` の `cm.usageDays`（`cm.tab` と同じ try/catch 付きアクセサ）。
 - テーブルは**署名が変わった時だけ**組み直す（日付・合計・source・セッション・
   ccusage の取得時刻を並べた文字列）。10秒ごとに DOM を捨てないため。
@@ -1664,7 +1660,7 @@ and the other changed」がこれを固定している（親をキャッシュ�
 
 ## 9. 通知設定
 
-M2 で決めた「通知はブラウザの Web Notifications API だけ」を維持したまま、
+4 章で決めた「通知はブラウザの Web Notifications API だけ」を維持したまま、
 **何を鳴らすか**をユーザーが決められるようにした回。サーバは1バイトも増えていない
 （`STATIC_FILES` に `notify-rules.js` を足しただけ）。
 
@@ -1679,7 +1675,7 @@ M2 で決めた「通知はブラウザの Web Notifications API だけ」を維
 - **ブラウザごとに違って当然の設定である。** 作業用PCでは全部鳴らし、
   サブモニタの表示専用タブでは枠の警告だけ、という使い分けは自然だが、
   サーバに1つ置くとそれができない。
-- **書き込みルートを増やしたくない。** M4 で「GET が書く唯一のファイル」が
+- **書き込みルートを増やしたくない。** Usage ビューで「GET が書く唯一のファイル」が
   既に1つできている（既知の制約24）。設定の PUT を足すと、認証とオリジン検証の
   境界に**状態を変える動詞**が初めて現れる。監視ツールの攻撃面としては割に合わない。
 

@@ -85,7 +85,7 @@
     'claude-haiku-4-5': 'Haiku',
     'claude-opus-4-5': 'Opus',
     'claude-sonnet-4-5': 'Sonnet',
-    /* Measured in the real transcripts on 2026-09-06 (M4). Kept in step with
+    /* Measured in the real transcripts on 2026-09-06. Kept in step with
        MODEL_SERIES in src/usage-view.js, which is the server-side twin. */
     'claude-fable-5-1': 'Fable',
     'claude-opus-4-7': 'Opus'
@@ -231,7 +231,7 @@
   /**
    * Local HH:MM, with the date in front whenever it is not today.
    *
-   * The convention M2 settled on for the rate-limit reset, applied to every
+   * The convention the Live view settled on for the rate-limit reset, applied to every
    * absolute time the UI shows: a bare "06:00" on a row from three days ago
    * reads as this morning, which is not a small error - it is the wrong day.
    */
@@ -1831,7 +1831,7 @@
   /* --------------------------------- usage -------------------------------- */
 
   /*
-   * The M4 Usage view.
+   * The Usage view.
    *
    * Unlike the tree, one rebuild reads EVERY transcript, so the SSE-driven
    * refresh is debounced ten times harder (10s vs 2s) and, like the tree, only
@@ -1889,7 +1889,7 @@
     return USAGE_SERIES_LABEL[series] || series;
   }
 
-  /** Compact text, the exact value on hover, and 0 left blank (M3 rule). */
+  /** Compact text, the exact value on hover, and 0 left blank (tree view rule). */
   function numCell(n) {
     var v = typeof n === 'number' && isFinite(n) ? n : 0;
     var cell = el('td', v ? 'utab--n' : 'utab--zero', v ? compact(v) : '');
@@ -2230,7 +2230,7 @@
   /**
    * A snapshot arrived. A usage rebuild walks every transcript, so it is
    * debounced 10s and only while this tab is visible - re-checked when the
-   * timer fires, not only when it was armed (M3 review 8.3).
+   * timer fires, not only when it was armed (architecture 8.3).
    */
   function onSnapshotForUsage() {
     if (currentView !== 'usage') return;

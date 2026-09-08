@@ -1,5 +1,5 @@
 /**
- * M3 endpoints and their caches.
+ * Tree endpoints and their caches.
  *
  * A real listener on 127.0.0.1 with an ephemeral port, over a SYNTHESIZED
  * projects tree and a synthesized events dir. Nothing under ~/.claude or
@@ -108,7 +108,7 @@ function writeFixture() {
   fs.mkdirSync(path.join(sessionDir, 'subagents'), { recursive: true });
 
   writeJsonl(path.join(projDir, `${SID}.jsonl`), [
-    { type: 'ai-title', aiTitle: 'M3 fixture', sessionId: SID },
+    { type: 'ai-title', aiTitle: 'tree fixture', sessionId: SID },
     assistantRec({
       timestamp: '2026-09-01T00:00:00.000Z',
       cwd: 'D:\\tmp\\treeapi',
@@ -325,7 +325,7 @@ describe('id validation', () => {
 /* --------------------------------- auth ---------------------------------- */
 
 describe('the new routes are behind the same door as the old ones', () => {
-  test('no cookie is 403 on every M3 route', async () => {
+  test('no cookie is 403 on every tree route', async () => {
     for (const p of ['/api/sessions', `/api/tree/${SID}`, `/api/tools/${SID}`]) {
       const res = await get(p);
       assert.equal(res.status, 403, p);
@@ -422,7 +422,7 @@ describe('GET /api/tree/<sessionId>', () => {
     assert.equal(res.status, 200);
     const d = res.json;
     assert.equal(d.sessionId, SID);
-    assert.equal(d.root.title, 'M3 fixture');
+    assert.equal(d.root.title, 'tree fixture');
     assert.equal(d.root.cwd, 'D:\\tmp\\treeapi');
     assert.equal(d.root.live, true);
 

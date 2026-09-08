@@ -24,7 +24,7 @@ export const RICH_TYPES = new Set(['assistant', 'user', 'system', 'summary']);
 export const KNOWN_IGNORED_TYPES = new Set([
   'attachment', // 1202
   'last-prompt', // 735
-  'ai-title', // 649  (not in m0 findings; discovered in M1)
+  'ai-title', // 649  (not in the docs; found in real transcripts)
   'mode', // 594
   'permission-mode', // 593
   'queue-operation', // 563

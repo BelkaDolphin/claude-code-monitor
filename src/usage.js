@@ -11,7 +11,7 @@
  * Claude Code writes multiple lines for one assistant message: streaming
  * snapshots plus the final one. Taking the FIRST line is catastrophically wrong
  * (measured: output_tokens 522,600 vs the true 2,334,305 for one day - a 4.5x
- * undercount). See docs/m0-local-findings.md.
+ * undercount).
  *
  * Fallback key when message.id is missing: 'REQ:'+requestId, else 'NOID:'+uuid.
  */

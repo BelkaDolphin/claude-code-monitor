@@ -1,5 +1,5 @@
 /**
- * M4: the Usage view's I/O layer.
+ * The Usage view's I/O layer.
  *
  * Every fixture is synthesized in a temp directory: the projects root, the
  * statusline sidecars and the persistence store are all injected, so nothing

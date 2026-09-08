@@ -114,7 +114,7 @@ export const AGENT_STALE_MS = 10 * 60 * 1000;
  * its longest tool runs (measured: 17m12s for one Bash call), and unlike an
  * agent it has no SubagentStop to fall back on - only SessionEnd, which is
  * exactly the event that never arrives when Claude Code is killed.
- * Measured case: ea1b82f5's last event is a PostToolUse at 2026-09-02T23:59:50
+ * Measured case: 11111111's last event is a PostToolUse at 2026-09-02T23:59:50
  * and it sat "busy" for days.
  */
 export const SESSION_STALE_MS = 30 * 60 * 1000;
@@ -128,7 +128,7 @@ const HOOK_LIVE_PHASES = new Set(['busy', 'waiting_permission', 'waiting_input',
  * whose last event was a Stop and whose process then died without a
  * SessionEnd (window closed, machine rebooted, monitor restarted after the
  * sessions/<pid>.json was gone) would otherwise sit in the live list forever.
- * Measured: 77b69db3's last event was a Stop at 2026-09-06T15:34 and it was
+ * Measured: 22222222's last event was a Stop at 2026-09-06T15:34 and it was
  * still "live" two days later.
  */
 const HOOK_SWEEP_PHASES = new Set([...HOOK_LIVE_PHASES, 'idle']);
@@ -837,7 +837,7 @@ function toSessionMtimeLookup(src) {
  *     one PreToolUse and one PostToolUse, no SubagentStart, no SubagentStop and
  *     no meta.json, and stayed "running" for over an hour;
  *   - a SESSION with no SessionEnd - Claude Code killed, the machine rebooted,
- *     the terminal closed. Measured: ea1b82f5's last event is a PostToolUse at
+ *     the terminal closed. Measured: 11111111's last event is a PostToolUse at
  *     2026-09-02T23:59:50 and it read "busy" for four days.
  *
  * The session rule needs THREE things to be true at once, because marking a

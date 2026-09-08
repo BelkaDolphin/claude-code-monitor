@@ -16,7 +16,7 @@
  * The timeout stays generous even though no download can happen any more: a
  * 30-day corpus is ~100 MB of transcripts and ccusage reads all of it.
  *
- * Doc caveat carried over from M0: json-output.md and blocks-reports.md show
+ * Doc caveat carried over from the initial ccusage doc survey: json-output.md and blocks-reports.md show
  * two different shapes for `blocks --json`. We normalize both.
  */
 

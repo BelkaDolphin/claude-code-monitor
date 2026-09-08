@@ -1,5 +1,5 @@
 /**
- * The I/O and caching layer behind the M3 tree view.
+ * The I/O and caching layer behind the tree view.
  *
  * Everything that touches disk lives here; src/tree-merge.js stays pure.
  *

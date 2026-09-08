@@ -38,7 +38,7 @@
  * and no end time at all while the session is live. See resolveSessionSpan.
  *
  * Every resolved field carries a `*Source` sibling saying which source won, in
- * the same style as M1's `statusInferred`/`statusSource`: an inference is
+ * the same style as the collector's `statusInferred`/`statusSource`: an inference is
  * always labelled as one.
  *
  * Agents known ONLY to hooks (no meta.json, no transcript - the measured

@@ -458,8 +458,8 @@ describe('nesting and orphans', () => {
 
 describe('root node', () => {
   test('the title follows the Live view: ai-title, else the cwd tail', () => {
-    const res = mergeTree({ tree: treeOf([]), aiTitle: 'M3 ツリービュー', cwd: 'D:\\develop\\Claude監視' });
-    assert.equal(res.root.title, 'M3 ツリービュー');
+    const res = mergeTree({ tree: treeOf([]), aiTitle: 'ツリービュー', cwd: 'D:\\develop\\Claude監視' });
+    assert.equal(res.root.title, 'ツリービュー');
   });
 
   test('a placeholder ai-title is refused and the cwd wins', () => {

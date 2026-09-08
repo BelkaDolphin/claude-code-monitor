@@ -14,14 +14,14 @@
  *   GET /api/state    snapshot JSON
  *   GET /api/stream   SSE: `snapshot` on connect and on every change
  *   GET /api/health   {ok, uptime, collectorStats}
- *   GET /api/sessions?days=N          session list for the tree view (M3)
- *   GET /api/tree/<sessionId>         one merged subagent tree (M3)
- *   GET /api/tools/<sessionId>?agent=&limit=  tool log tail (M3)
- *   GET /api/usage?days=N             daily / model / session token usage (M4)
- *   GET /api/usage/ccusage?days=N     the same window compared against ccusage (M4)
+ *   GET /api/sessions?days=N          session list for the tree view
+ *   GET /api/tree/<sessionId>         one merged subagent tree
+ *   GET /api/tools/<sessionId>?agent=&limit=  tool log tail
+ *   GET /api/usage?days=N             daily / model / session token usage
+ *   GET /api/usage/ccusage?days=N     the same window compared against ccusage
  *   everything else   404
  *
- * A malformed or unknown id on the M3 routes answers 404, never 400: a 400
+ * A malformed or unknown id on the tree routes answers 404, never 400: a 400
  * would confirm "that shape is a real id, this one just does not exist" to
  * anything that got past the cookie. One shape of answer, no oracle.
  *
@@ -254,7 +254,7 @@ export function createRequestHandler(deps) {
   // `async-unknown` while `cli.js tree` reported `completed` for the same id.
   const hookHistory = deps.hookHistory
     ?? new HookHistory({ dir: collector && collector.eventsDir });
-  // M4. The store is the ONLY thing the dashboard writes on a GET: it is our
+  // Usage view. The store is the ONLY thing the dashboard writes on a GET: it is our
   // own copy of the daily figures, kept because Claude Code deletes its
   // transcripts after ~30 days (known constraint 7).
   const statuslineDir = deps.statuslineDir ?? (collector && collector.statuslineDir) ?? undefined;
@@ -373,7 +373,7 @@ export function createRequestHandler(deps) {
 
   /**
    * Parsing a 35MB transcript can fail in ways we have not met yet. A monitor
-   * must answer, not die (architecture 4.7), so every M3 route runs inside
+   * must answer, not die (architecture 4.7), so every tree route runs inside
    * this: one JSON 500, one recorded error, the listener still up.
    */
   function guard(where, req, res, fn) {
@@ -451,7 +451,7 @@ export function createRequestHandler(deps) {
     sendJson(req, res, 200, toolLogView({ entry, cache: treeCache, agentId, limit }));
   }
 
-  /** The Usage view's window, shared by both M4 routes. */
+  /** The Usage view's window, shared by both Usage routes. */
   function usageDaysOf(req) {
     return clampInt(queryOf(req.url).get('days'), DEFAULT_DAYS, MIN_DAYS, MAX_DAYS);
   }
@@ -493,7 +493,7 @@ export function createRequestHandler(deps) {
       if (route === '/api/usage/ccusage') {
         return guardAsync('api:usage-ccusage', req, res, () => handleUsageCcusage(req, res));
       }
-      // Same one-shape answer as the M3 routes: no oracle for what exists.
+      // Same one-shape answer as the tree routes: no oracle for what exists.
       return notFoundJson(req, res);
     }
     if (route.startsWith('/api/tree/')) {
@@ -509,7 +509,7 @@ export function createRequestHandler(deps) {
       case '/api/usage':
         return guard('api:usage', req, res, () => handleUsage(req, res));
 
-      // The three original M2 routes ran outside `guard`, on the assumption
+      // The three original Live routes ran outside `guard`, on the assumption
       // that building a snapshot cannot fail. It can: `JSON.stringify` throws
       // on a circular value or a BigInt that a future field brings in, and the
       // snapshot is assembled from four on-disk sources. Unguarded that is an

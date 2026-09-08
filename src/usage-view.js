@@ -1,5 +1,5 @@
 /**
- * The I/O and caching layer behind the M4 Usage view.
+ * The I/O and caching layer behind the Usage view.
  *
  * Mirrors src/tree-view.js: everything that touches disk lives here, the
  * aggregation rules stay in src/usage.js.
@@ -19,8 +19,7 @@
  * answer as parsing every file in one pass, no matter how many of the files
  * came from the cache.
  *
- * Cost, measured on this machine (Node v24.13.0, Windows 11) - see
- * docs/m4-verification.md for the full table:
+ * Cost, measured on this machine (Node v24.13.0, Windows 11):
  *
  *   cold, days=30 (100 transcripts, 112.6 MB, 27,532 lines)   670 ms
  *   cold, days=7  (31 of those 100 opened - see MTIME_MARGIN_MS)  204 ms
@@ -90,7 +89,7 @@ const MODEL_SERIES = {
   'claude-opus-4-5': 'Opus',
   'claude-sonnet-4-5': 'Sonnet',
   // Measured on this machine 2026-09-06, in the real transcripts, and absent
-  // from the M3 table: 25.7M tokens of claude-fable-5-1 and 2.1M of
+  // from the tree view's table: 25.7M tokens of claude-fable-5-1 and 2.1M of
   // claude-opus-4-7 were landing in 'other'. `<synthetic>` (7 messages,
   // 0 tokens) legitimately stays there - it is not a model.
   'claude-fable-5-1': 'Fable',

@@ -1,28 +1,15 @@
 # claude-monitor
 
 Claude Code の稼働状況・サブエージェントツリー・トークン使用量・ツール実行ログを
-ローカルデータから読み取る監視ツール。M1（コア）+ M2（常駐サーバと Live ビュー）
-+ M3（ツリービュー）+ 常駐化（永続トークン・ログファイル・ログオン時の自動起動）
-+ M4（Usage ビュー）+ 通知設定（種類別 ON/OFF・利用枠のしきい値通知）。
+ローカルデータから読み取る監視ツール。ブラウザで見る Live / ツリー / Usage の3ビュー、
+種類別 ON/OFF と利用枠のしきい値を持つ通知、ログオン時の自動起動を含む常駐化、
+同じ情報を引く CLI からなる。
 
 - 外部npm依存 **ゼロ**（Node標準モジュールのみ）
 - `~/.claude` 配下は読み取り専用（`install-hooks` で `settings.json` を更新する場合を除く）
 - 自前のデータ置き場は `%USERPROFILE%\.claude-monitor\`
 
-設計と既知の制約は [docs/architecture.md](docs/architecture.md)、
-動作確認ログは [docs/m1-verification.md](docs/m1-verification.md)、
-[docs/m2-verification.md](docs/m2-verification.md)、
-[docs/m3-verification.md](docs/m3-verification.md)、
-[docs/autostart-verification.md](docs/autostart-verification.md)、
-[docs/m4-verification.md](docs/m4-verification.md)、
-[docs/notify-settings-verification.md](docs/notify-settings-verification.md)、
-稼働数の数え方の修正は [docs/live-count-fix.md](docs/live-count-fix.md) を参照。
-
-着手前の M0 調査メモ（公式ドキュメントの読み込みと、手元の実データでの裏取り）は
-[docs/m0-docs-findings.md](docs/m0-docs-findings.md) と
-[docs/m0-local-findings.md](docs/m0-local-findings.md)。
-[docs/reference/usage_agg_v2.js](docs/reference/usage_agg_v2.js) は
-その裏取りに使った**参考スクリプトで、本体とは無関係**（実行されないし、テストもされない）。
+設計と既知の制約は [docs/architecture.md](docs/architecture.md) を参照。
 
 ## 必要環境
 

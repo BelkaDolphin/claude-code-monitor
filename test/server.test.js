@@ -93,7 +93,7 @@ before(async () => {
   });
   await collector.start();
 
-  // M4 fixture: two days of usage in a session the collector does not track,
+  // Usage fixture: two days of usage in a session the collector does not track,
   // so /api/usage has something to report without changing any snapshot.
   writeJsonl(path.join(projectsRoot, 'D--tmp-usage', `${USAGE_SID}.jsonl`), [
     assistantRec({
@@ -311,7 +311,7 @@ describe('GET /api/health', () => {
   });
 });
 
-describe('M4: GET /api/usage', () => {
+describe('Usage: GET /api/usage', () => {
   test('needs the cookie', async () => {
     assert.equal((await get('/api/usage')).status, 403);
     assert.equal((await get('/api/usage?days=7')).status, 403);
@@ -400,7 +400,7 @@ describe('M4: GET /api/usage', () => {
   });
 });
 
-describe('M4: GET /api/usage/ccusage', () => {
+describe('Usage: GET /api/usage/ccusage', () => {
   test('needs the cookie', async () => {
     assert.equal((await get('/api/usage/ccusage')).status, 403);
   });
@@ -487,7 +487,7 @@ describe('M4: GET /api/usage/ccusage', () => {
  * NOTHING absorbs - the cache object itself failing - and that is the case that
  * used to reach `unhandledRejection` and make installCrashHandlers exit 1.
  */
-describe('M4: guardAsync is what keeps a broken /api/usage/ccusage from killing the server', () => {
+describe('Usage: guardAsync is what keeps a broken /api/usage/ccusage from killing the server', () => {
   let h2;
   const seen = [];
   /** daily() is swapped per test; stats() must survive for /api/health. */
@@ -791,7 +791,7 @@ describe('review 2026-09-03: hardening', () => {
   });
 });
 
-describe('the M2 routes are guarded too (4.7)', () => {
+describe('the Live routes are guarded too (4.7)', () => {
   /**
    * A server whose collector cannot produce a snapshot. This is the failure
    * the guards exist for: `/api/state`, `/api/health` and `/api/stream` all
@@ -1000,7 +1000,7 @@ describe('browser review 2026-09-03: what the shipped UI does', () => {
   });
 
   test('agent rows show label, model and a distinct mark for inferred ends (items 1, 2, 7)', () => {
-    // One status table, shared by the Live cards and the Tree (M3 review 3).
+    // One status table, shared by the Live cards and the Tree (review item 3).
     const marks = bodyOf(js, 'var AGENT_MARK = {');
     for (const pair of ["running: '▶'", "completed: '✓'", "stale: '?'",
       "error: '✗'", "'async-unknown': '~'"]) {
@@ -1049,7 +1049,7 @@ function bodyOf(js, signature) {
   return js.slice(start, end);
 }
 
-describe('M3: the tree view the server actually hands out', () => {
+describe('Tree: the tree view the server actually hands out', () => {
   let js;
   let html;
   let css;
@@ -1072,14 +1072,14 @@ describe('M3: the tree view the server actually hands out', () => {
     }
     // The tab no longer advertises itself as unbuilt.
     assert.match(html, /id="tab-tree" data-view="tree">Tree<\/button>/);
-    // Neither does Usage, now that M4 shipped: the milestone badge is gone and
+    // Neither does Usage, now that the Usage view shipped: the milestone badge is gone and
     // so is the class that drew it.
     assert.match(html, /id="tab-usage" data-view="usage">Usage<\/button>/);
     assert.equal(/tab__m/.test(html), false, 'the milestone badge is still in the markup');
     assert.equal(/\.tab__m/.test(css), false, 'the milestone badge style is still in style.css');
   });
 
-  test('it talks to the three M3 endpoints and nothing else', () => {
+  test('it talks to the three tree endpoints and nothing else', () => {
     assert.match(js, /'\/api\/sessions\?days='/);
     assert.match(js, /'\/api\/tree\/' \+ encodeURIComponent/);
     assert.match(js, /'\/api\/tools\/' \+ encodeURIComponent/);
@@ -1173,7 +1173,7 @@ describe('M3: the tree view the server actually hands out', () => {
       'the failure path does not clear the loaded-key');
   });
 
-  test('the M3 markup still has no inline script, style or handler', () => {
+  test('the Tree markup still has no inline script, style or handler', () => {
     assert.equal(/<script(?![^>]*\ssrc=)/i.test(html), false);
     assert.equal(/<style[\s>]/i.test(html), false);
     assert.equal(/\son[a-z]+\s*=/i.test(html), false);
@@ -1181,13 +1181,13 @@ describe('M3: the tree view the server actually hands out', () => {
     assert.equal(/https?:\/\//i.test(html.replace(/<link rel="icon"[^>]*>/, '')), false);
   });
 
-  test('the M3 client code uses no forbidden DOM sink either', () => {
+  test('the Tree client code uses no forbidden DOM sink either', () => {
     for (const re of [/\.innerHTML/, /\.outerHTML/, /\.insertAdjacentHTML\s*\(/, /document\.write\s*\(/, /\beval\s*\(/, /new\s+Function\s*\(/, /setAttribute\(\s*'style'/]) {
       assert.equal(re.test(js), false, `app.js uses ${re}`);
     }
   });
 
-  test('the M3 stylesheet pulls in nothing from outside', () => {
+  test('the Tree stylesheet pulls in nothing from outside', () => {
     assert.equal(/@import/.test(css), false);
     assert.equal(/url\(\s*['"]?https?:/i.test(css), false);
     // The tree classes are actually styled.
@@ -1203,7 +1203,7 @@ describe('M3: the tree view the server actually hands out', () => {
   });
 });
 
-describe('M4: the Usage view the server actually hands out', () => {
+describe('Usage: the Usage view the server actually hands out', () => {
   let js;
   let html;
   let css;
@@ -1230,7 +1230,7 @@ describe('M4: the Usage view the server actually hands out', () => {
     for (const v of ['7', '14', '30']) assert.match(html, new RegExp(`<option value="${v}"`));
   });
 
-  test('it talks to the two M4 endpoints and nothing else', () => {
+  test('it talks to the two Usage endpoints and nothing else', () => {
     assert.match(js, /'\/api\/usage\?days=' \+ want/);
     assert.match(js, /'\/api\/usage\/ccusage\?days=' \+ usage\.days/);
     assert.equal(/\/api\/usage\/(?!ccusage)[a-z]/.test(js), false, 'no other /api/usage/ path');
@@ -1248,7 +1248,7 @@ describe('M4: the Usage view the server actually hands out', () => {
     assert.match(js, /var USAGE_DEBOUNCE_MS = 10000;/);
     const body = bodyOf(js, 'function onSnapshotForUsage() {');
     assert.match(body, /if \(currentView !== 'usage'\) return;/);
-    // The re-check INSIDE the timer is the M3 review fix (8.3), repeated here.
+    // The re-check INSIDE the timer is the review fix (8.3), repeated here.
     assert.equal((body.match(/currentView !== 'usage'/g) || []).length, 2,
       'the visibility check must run again when the timer fires');
     assert.match(js, /if \(name === 'usage'\) enterUsage\(\);/);
@@ -1336,7 +1336,7 @@ describe('M4: the Usage view the server actually hands out', () => {
     assert.equal(compact('12'), '-');
   });
 
-  test('the M4 markup still has no inline script, style or handler', () => {
+  test('the Usage markup still has no inline script, style or handler', () => {
     assert.equal(/<script(?![^>]*\ssrc=)/i.test(html), false);
     assert.equal(/<style[\s>]/i.test(html), false);
     assert.equal(/\son[a-z]+\s*=/i.test(html), false);
@@ -1357,13 +1357,13 @@ describe('M4: the Usage view the server actually hands out', () => {
     assert.match(src, /setText\(/);
   });
 
-  test('the M4 client code uses no forbidden DOM sink either', () => {
+  test('the Usage client code uses no forbidden DOM sink either', () => {
     for (const re of [/\.innerHTML/, /\.outerHTML/, /\.insertAdjacentHTML\s*\(/, /document\.write\s*\(/, /\beval\s*\(/, /new\s+Function\s*\(/, /setAttribute\(\s*'style'/]) {
       assert.equal(re.test(js), false, `app.js uses ${re}`);
     }
   });
 
-  test('the M4 stylesheet styles the new classes and pulls in nothing external', () => {
+  test('the Usage stylesheet styles the new classes and pulls in nothing external', () => {
     assert.equal(/@import/.test(css), false);
     assert.equal(/url\(\s*['"]?https?:/i.test(css), false);
     for (const cls of ['.usage__head', '.usage__tiles', '.utile', '.utab', '.useg', '.uleg', '.usage__bar']) {

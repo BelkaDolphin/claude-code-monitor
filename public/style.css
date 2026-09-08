@@ -33,7 +33,7 @@
   --dead: #a8433d;
   --ok: #2f7d5c;
 
-  /* Model series (M4). Deliberately NOT amber: amber means "a human is
+  /* Model series (Usage view). Deliberately NOT amber: amber means "a human is
      needed" everywhere else in this UI and a model breakdown never is. */
   --m-opus: #2f6fce;
   --m-sonnet: #2f7d5c;
