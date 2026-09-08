@@ -1,9 +1,25 @@
 # claude-monitor
 
+[![test](https://github.com/BelkaDolphin/claude-code-monitor/actions/workflows/test.yml/badge.svg)](https://github.com/BelkaDolphin/claude-code-monitor/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+A local, dependency-free dashboard for [Claude Code](https://docs.anthropic.com/en/docs/claude-code):
+live session and tool status, the subagent tree, token usage per day and model,
+browser notifications with per-kind toggles and quota thresholds, and a Windows
+tray / autostart mode. It reads only what Claude Code already writes under
+`~/.claude` and never talks to the network. Node.js 20+, no npm dependencies.
+The documentation below is in Japanese.
+
 Claude Code の稼働状況・サブエージェントツリー・トークン使用量・ツール実行ログを
 ローカルデータから読み取る監視ツール。ブラウザで見る Live / ツリー / Usage の3ビュー、
 種類別 ON/OFF と利用枠のしきい値を持つ通知、ログオン時の自動起動を含む常駐化、
 同じ情報を引く CLI からなる。
+
+| Live | Tree |
+|---|---|
+| ![Live ビュー](docs/images/live.png) | ![Tree ビュー](docs/images/tree.png) |
+
+![Usage ビュー](docs/images/usage.png)
 
 - 外部npm依存 **ゼロ**（Node標準モジュールのみ）
 - `~/.claude` 配下は読み取り専用（`install-hooks` で `settings.json` を更新する場合を除く）
