@@ -14,8 +14,10 @@
  *   sessions   ~/.claude/sessions/*.json every 2s (PID liveness).
  *              The PID-reuse check shells out to PowerShell (Linux: reads
  *              /proc), so it runs on a much slower cadence (60s) - see
- *              PROC_START_EVERY. sessions.js remembers the verdict for the
- *              ticks in between.
+ *              PROC_START_EVERY. sessions.js remembers each verdict and
+ *              re-applies it on the ticks in between - including when a start
+ *              time cannot be read - and forgets it once the session drops out
+ *              of the listing.
  *   statusline <monitorDir>/statusline/*.json, fs.watch + 2s poll.
  *   transcript the jsonl of every live session (main + its subagents), tailed
  *              incrementally for ai-title and token usage; the full session

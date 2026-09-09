@@ -52,6 +52,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { monitorDir, ensureDir } from './paths.js';
+import { PID_START_SLACK_MS } from './sessions.js';
 import { defaultLogFilePath } from './token-store.js';
 import { DEFAULT_PORT } from './server.js';
 
@@ -766,9 +767,11 @@ export function readTrayPid(file = trayPidPath()) {
  * How far a recorded start time may be from the observed one and still be the
  * same process. The tray reads its own StartTime from the OS, so the two should
  * agree exactly - but the server's is read a moment after Process.Start, and a
- * clock adjustment can move either. The same 60s slack sessions.js allows.
+ * clock adjustment can move either. Defined once, in sessions.js, which
+ * applies the same slack to the session files; re-exported here because that is
+ * where callers and tests have always found it.
  */
-export const PID_START_SLACK_MS = 60_000;
+export { PID_START_SLACK_MS };
 
 /**
  * Look up what is actually running at these PIDs: name and start time, not just
