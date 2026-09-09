@@ -8,6 +8,7 @@ live session and tool status, the subagent tree, token usage per day and model,
 browser notifications with per-kind toggles and quota thresholds, and a Windows
 tray / autostart mode. It reads only what Claude Code already writes under
 `~/.claude` and never talks to the network. Node.js 20+, no npm dependencies.
+Developed on Windows 11; the server and hooks are reported to work on WSL2/Linux too.
 The documentation below is in Japanese.
 
 Claude Code の稼働状況・サブエージェントツリー・トークン使用量・ツール実行ログを
@@ -31,7 +32,7 @@ Claude Code の稼働状況・サブエージェントツリー・トークン�
 
 - Node.js 20 以上（検証環境: v24.13.0）
 - Claude Code 2.1.258 で検証
-- 動作確認は Windows 11 のみ。`serve` と hooks の登録は OS 依存のコードを持たないが、Windows 以外では未検証。`install-autostart` と `tray` は Windows 専用。
+- 動作確認は Windows 11。WSL2（Ubuntu）でも `serve` / hooks / statusLine が動くことを報告で確認済み（Issue #1）。PID 再利用の検知は Windows と Linux で実装があり、macOS では `kill(0)` の生死判定のみ。`install-autostart` と `tray` は Windows 専用。
 
 ## クイックスタート
 
@@ -79,7 +80,11 @@ http://127.0.0.1:47321/?t=13131313……（64桁のhex）
   実行中サブエージェント、直近の通知、トークン合計、最終イベントからの経過時間。
   終了・停止したセッションは折りたたみの中。
   **稼働かどうかは積極的な証拠で決める**——生きている PID、hook 由来の phase、
-  `sessions/<pid>.json` の `status` のどれか。statusline のサイドカーしか
+  `sessions/<pid>.json` の `status` のどれか。`sessions/<pid>.json` の PID が
+  別プロセスに使い回されていないかは、プロセスの実際の起動時刻と突き合わせて
+  60 秒ごとに確認する（Windows は PowerShell、Linux は `/proc`）。突合の結果は
+  次の確認まで覚えておくので、間の 2 秒刻みで「稼働中」に戻ることはない。
+  statusline のサイドカーしか
   無いセッションは「不明」であって稼働ではない（statusline ディレクトリは
   掃除されないので、古いファイルが延々と残る）。hook が30分無音で PID も
   transcript も動いていないセッションは、作業中でも入力待ちでも「停止推定」に落ちる
