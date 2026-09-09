@@ -9,6 +9,8 @@ browser notifications with per-kind toggles and quota thresholds, and a Windows
 tray / autostart mode. It reads only what Claude Code already writes under
 `~/.claude` and never talks to the network. Node.js 20+, no npm dependencies.
 Developed on Windows 11; the server and hooks are reported to work on WSL2/Linux too.
+Almost all of the code was written by Claude Code; a human set the requirements,
+made the design decisions and reviewed every change.
 The documentation below is in Japanese.
 
 Claude Code の稼働状況・サブエージェントツリー・トークン使用量・ツール実行ログを
@@ -483,3 +485,11 @@ $env:CLAUDE_MONITOR_IT = "1"; node --test test/integration.test.js
 ## ライセンス
 
 MIT License。詳細は [LICENSE](LICENSE) を参照。
+
+## 開発について
+
+このプロジェクトのコードとドキュメントは、ほぼ全部を [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+で生成した。人間がやったのは要件定義、設計判断、レビュー所見の採否、動作確認で、
+手で書いた行はごくわずか。AI 生成物の著作権の扱いは国によって見解が分かれるので、
+MIT の許諾はそれが及ぶ範囲で有効、それ以外の部分はそもそも自由に使えるもの、と
+理解してほしい。
