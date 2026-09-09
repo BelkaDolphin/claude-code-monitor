@@ -2,7 +2,11 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readLiveSessions, isPidAlive, filetimeToEpochMs } from '../src/sessions.js';
+import {
+  readLiveSessions, isPidAlive, filetimeToEpochMs,
+  linuxBootTimeSec, parseProcStatStartTicks, linuxTicksToEpochMs, procStartToEpochMs,
+  resetReuseVerdicts,
+} from '../src/sessions.js';
 import { makeTmpDir } from './helpers.js';
 
 describe('filetimeToEpochMs', () => {
@@ -108,6 +112,96 @@ describe('readLiveSessions', () => {
       assert.equal(sessions[0].pid, 4242);
     } finally {
       dir3.cleanup();
+    }
+  });
+});
+
+describe('Linux procStart (ticks since boot)', () => {
+  test('linuxBootTimeSec parses btime out of /proc/stat text', () => {
+    const text = 'cpu  1 2 3 4\nintr 5\nctxt 6\nbtime 1788930197\nprocesses 7\n';
+    assert.equal(linuxBootTimeSec(text), 1788930197);
+    assert.equal(linuxBootTimeSec('cpu 1 2 3\n'), null);
+  });
+
+  test('parseProcStatStartTicks takes field 22 even when comm has spaces and parens', () => {
+    // 3 (state) is index 0 after the last ')', so starttime (22) is index 19.
+    const tail = 'S 1 420 420 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 254037 1000 5 18446744073709551615';
+    assert.equal(parseProcStatStartTicks(`7903 (claude) ${tail}`), 254037);
+    assert.equal(parseProcStatStartTicks(`421 (Relay(422)) ${tail}`), 254037);
+    assert.equal(parseProcStatStartTicks(`422 (my shell (x)) ${tail}`), 254037);
+    assert.equal(parseProcStatStartTicks('garbage'), null);
+    assert.equal(parseProcStatStartTicks(null), null);
+  });
+
+  test('linuxTicksToEpochMs is btime plus ticks at USER_HZ=100', () => {
+    // Measured 2026-09-09: pid 7903 had procStart "254037" and /proc/7903/stat
+    // starttime 254037 with btime 1788930197 -> 05:45:37.370Z.
+    assert.equal(linuxTicksToEpochMs('254037', 1788930197), Date.parse('2026-09-09T05:45:37.370Z'));
+    assert.equal(linuxTicksToEpochMs(254037, 1788930197), Date.parse('2026-09-09T05:45:37.370Z'));
+    assert.equal(linuxTicksToEpochMs('254037', null), null);
+    assert.equal(linuxTicksToEpochMs('134328265116630248x', 1788930197), null);
+    assert.equal(linuxTicksToEpochMs('-5', 1788930197), null);
+  });
+
+  test('procStartToEpochMs dispatches on platform and is null elsewhere', () => {
+    assert.equal(procStartToEpochMs('134328265116630248', 'win32'), filetimeToEpochMs('134328265116630248'));
+    assert.equal(procStartToEpochMs('254037', 'linux', 1788930197), Date.parse('2026-09-09T05:45:37.370Z'));
+    assert.equal(procStartToEpochMs('254037', 'darwin'), null);
+    assert.equal(procStartToEpochMs(null, 'linux', 1788930197), null);
+  });
+
+  test('a stale file from a previous boot is flagged as pid-reused (Linux only)', { skip: process.platform !== 'linux' }, async () => {
+    const tmp = makeTmpDir('sessions-linux');
+    try {
+      // pid 1 is always alive and was born at boot (starttime ~0 ticks), but
+      // this file claims a session that started months ago on it. Its tick
+      // value (small) may well land within slack of pid 1's actual ticks - the
+      // bug this guards against - so startedAt must catch it.
+      fs.writeFileSync(path.join(tmp.dir, '1.json'), JSON.stringify({
+        pid: 1, sessionId: 'old-boot', status: 'busy', procStart: '3594',
+        startedAt: Date.parse('2026-05-06T01:39:04.132Z'), updatedAt: 1,
+      }), 'utf8');
+      // Ourselves: file written from the real /proc values -> not reused.
+      const statLine = fs.readFileSync(`/proc/${process.pid}/stat`, 'utf8');
+      fs.writeFileSync(path.join(tmp.dir, `${process.pid}.json`), JSON.stringify({
+        pid: process.pid, sessionId: 'me', status: 'busy',
+        procStart: String(parseProcStatStartTicks(statLine)),
+        startedAt: Date.now(), updatedAt: 2,
+      }), 'utf8');
+      resetReuseVerdicts();
+      const { sessions } = await readLiveSessions({ dir: tmp.dir });
+      const old = sessions.find((s) => s.sessionId === 'old-boot');
+      const me = sessions.find((s) => s.sessionId === 'me');
+      assert.equal(old.pidReused, true);
+      assert.equal(old.alive, false);
+      assert.equal(old.aliveSource, 'pid-reused');
+      assert.equal(me.pidReused, false);
+      assert.equal(me.alive, true);
+
+      // The collector re-checks start times only every 30th tick. The cheap
+      // ticks in between must keep the verdict, not fall back to kill(0).
+      const again = await readLiveSessions({ dir: tmp.dir, checkProcStart: false });
+      const old2 = again.sessions.find((s) => s.sessionId === 'old-boot');
+      const me2 = again.sessions.find((s) => s.sessionId === 'me');
+      assert.equal(old2.pidReused, true);
+      assert.equal(old2.alive, false);
+      assert.equal(old2.aliveSource, 'pid-reused');
+      assert.equal(me2.pidReused, false);
+      assert.equal(me2.alive, true);
+
+      // A rewritten file (a NEW session that happens to get the same pid) does
+      // not inherit the old verdict.
+      fs.writeFileSync(path.join(tmp.dir, '1.json'), JSON.stringify({
+        pid: 1, sessionId: 'new-on-pid-1', status: 'busy', procStart: '0',
+        startedAt: Date.now(), updatedAt: 3,
+      }), 'utf8');
+      const third = await readLiveSessions({ dir: tmp.dir, checkProcStart: false });
+      const fresh = third.sessions.find((s) => s.sessionId === 'new-on-pid-1');
+      assert.equal(fresh.pidReused, null);
+      assert.equal(fresh.alive, true);
+    } finally {
+      resetReuseVerdicts();
+      tmp.cleanup();
     }
   });
 });

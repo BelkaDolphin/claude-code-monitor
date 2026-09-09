@@ -12,8 +12,10 @@
  *              Byte offsets come from JsonlTail, so a poll that finds nothing
  *              new costs one statSync.
  *   sessions   ~/.claude/sessions/*.json every 2s (PID liveness).
- *              The PID-reuse check shells out to PowerShell, so it runs on a
- *              much slower cadence (60s) - see PROC_START_EVERY.
+ *              The PID-reuse check shells out to PowerShell (Linux: reads
+ *              /proc), so it runs on a much slower cadence (60s) - see
+ *              PROC_START_EVERY. sessions.js remembers the verdict for the
+ *              ticks in between.
  *   statusline <monitorDir>/statusline/*.json, fs.watch + 2s poll.
  *   transcript the jsonl of every live session (main + its subagents), tailed
  *              incrementally for ai-title and token usage; the full session

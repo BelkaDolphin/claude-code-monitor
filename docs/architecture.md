@@ -531,9 +531,17 @@ UI の「取込エラー」には数えない（データが壊れている、�
    `statusline` サブコマンドは理由付きで「取得不可」を報告する。
 5. **statusLine はイベント駆動＋300msデバウンス。** ポーリングではないので、
    親セッションがアイドルの間は sidecar が更新されない。
-6. **PID再利用。** `procStart`（Windows FILETIME）と実プロセスの StartTime を
-   突き合わせて検知するが best-effort。PowerShell 呼び出しが失敗した場合は
-   `kill(0)` の結果をそのまま返す。
+6. **PID再利用。** `procStart` と実プロセスの起動時刻を突き合わせて検知するが
+   best-effort。`procStart` の中身は OS で違う——Windows は FILETIME、Linux は
+   `/proc/<pid>/stat` の starttime（起動からのクロックティック、USER_HZ=100）。
+   実プロセス側は Windows が PowerShell `Get-Process`、Linux が `/proc/<pid>/stat`
+   の直読み（他ユーザーのプロセスも読める。再利用された小さい PID は root の
+   ことが多い）。取得に失敗した場合は `kill(0)` の結果をそのまま返す。
+   突合は `procStart` と `startedAt` の**両方**に対して行う。ティック値は
+   起動からの相対時間なので、前回起動時の古いファイルのティックが今回起動の
+   若いプロセスのティックと偶然 60 秒以内に収まることがある（WSL で実測:
+   procStart 3594 の 4 か月前のファイルと、779 ティックで起動した bash）。
+   絶対時刻の `startedAt` がそれを拾い、ティックは同一起動内での厳密な照合を担う。
 7. **transcript は Claude Code 自身に削除される。** 実測で作業中に
    `~/.claude/.last-cleanup` が更新され、171ファイル→146ファイル、
    30日より古い日付のデータが消えた。過去分の集計は永続ではない。
@@ -564,6 +572,12 @@ UI の「取込エラー」には数えない（データが壊れている、�
 11. **PID再利用の検査は60秒に1回。** `sessions.js` の突合は PowerShell を
     spawn するため、2秒ごとの一覧取得では `checkProcStart:false` で回している。
     「死んだ直後の1分間だけ生きて見える」可能性が理論上残る。
+    検査しないティックは**前回の判定を引き継ぐ**（`sessions.js` がファイル・
+    pid・`procStart`・`startedAt` をキーに記憶する）。引き継がないと、再利用
+    された PID は `kill(0)` の「生きている」で毎回上書きされ、60 秒のうち
+    58 秒は稼働中として表示される（WSL で実測）。`kill(0)` が死んだと言った
+    時点で記憶を捨てるので、同じ PID に来た新しいセッションが古い判定を
+    引き継ぐことはない。
 12. **CSS の値を JS から書くのは CSSOM 経由（`el.style.setProperty`）に限る。**
     `style-src 'self'` は `style=` 属性の**マークアップ上の記述**を禁じるが、
     CSSOM での設定は CSP の対象外。`setAttribute('style', ...)` は使わない。
