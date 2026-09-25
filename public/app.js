@@ -61,8 +61,10 @@
   var GAUGE_LABEL = { five_hour: '5h', seven_day: '7d', spend_limit: 'spend' };
 
   /*
-   * Model display names. Table-driven on purpose: an id we do not recognise is
-   * shown verbatim rather than mangled by a clever rule.
+   * Model display names. The table is tried first; an id it does not list
+   * falls back to its family prefix (`claude-<family>-...`) so a new version
+   * (claude-opus-5-5, issue #3) needs no edit. An id of an unknown family is
+   * still shown verbatim rather than mangled by a clever rule.
    *
    * Two shapes reach us for the SAME agent, depending on which source won:
    * the alias meta.json records ("opus") and the full id a transcript carries
@@ -272,11 +274,18 @@
    */
   function modelLabel(id) {
     if (typeof id !== 'string' || !id) return '';
-    var key = id.toLowerCase();
-    if (MODEL_LABEL[key]) return MODEL_LABEL[key];
+    // A context suffix ("opus[1m]", "claude-fable-5-1[1m]") names no model.
+    var key = id.toLowerCase().replace(/\[[^\]]*\]$/, '');
+    // Own keys only: an id like "constructor" must not hit Object.prototype.
+    var has = Object.prototype.hasOwnProperty;
+    if (has.call(MODEL_LABEL, key)) return MODEL_LABEL[key];
     // Strip a trailing release date (claude-haiku-4-5-20251001) and retry.
     var undated = key.replace(/-\d{8}$/, '');
-    if (MODEL_LABEL[undated]) return MODEL_LABEL[undated];
+    if (has.call(MODEL_LABEL, undated)) return MODEL_LABEL[undated];
+    // A version the table has not caught up with: go by the family prefix,
+    // resolved through the table's alias rows so an unknown family passes through.
+    var family = /^claude-([a-z]+)-/.exec(key);
+    if (family && has.call(MODEL_LABEL, family[1])) return MODEL_LABEL[family[1]];
     return id;
   }
 

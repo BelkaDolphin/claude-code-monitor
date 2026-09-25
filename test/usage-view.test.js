@@ -161,6 +161,33 @@ describe('modelSeries', () => {
     assert.equal(modelSeries('claude-fable-5'), 'Fable');
   });
 
+  test('a version missing from the table falls back to its family prefix (issue #3)', () => {
+    assert.equal(modelSeries('claude-opus-5-5'), 'Opus');
+    assert.equal(modelSeries('claude-opus-5-5[1m]'), 'Opus');
+    assert.equal(modelSeries('claude-sonnet-6-20270101'), 'Sonnet');
+    assert.equal(modelSeries('claude-haiku-5'), 'Haiku');
+    assert.equal(modelSeries('claude-fable-6-2'), 'Fable');
+    assert.equal(modelSeries('CLAUDE-OPUS-6'), 'Opus');
+  });
+
+  test('a context suffix is dropped before any lookup, aliases included', () => {
+    assert.equal(modelSeries('opus[1m]'), 'Opus');
+    assert.equal(modelSeries('sonnet[1m]'), 'Sonnet');
+    assert.equal(modelSeries('claude-haiku-4-5-20251001[1m]'), 'Haiku');
+  });
+
+  test('the prefix fallback accepts only the known families', () => {
+    assert.equal(modelSeries('claude-newfamily-1'), 'other');
+    assert.equal(modelSeries('<synthetic>'), 'other');
+    assert.equal(modelSeries('claude-opus'), 'other', 'no version segment, not a claude-<family>- id');
+    assert.equal(modelSeries('xclaude-opus-5'), 'other');
+  });
+
+  test('an id that names an Object.prototype key is not looked up on the prototype', () => {
+    assert.equal(modelSeries('constructor'), 'other');
+    assert.equal(modelSeries('claude-constructor-1'), 'other');
+  });
+
   test('a trailing release date is stripped before the lookup', () => {
     assert.equal(modelSeries('claude-haiku-4-5-20251001'), 'Haiku');
   });
@@ -394,6 +421,20 @@ describe('sessions', () => {
 });
 
 describe('the persistence store', () => {
+  test('a stored day with the same total but a stale model split is rewritten (issue #3)', () => {
+    view({ days: 7, cache: new UsageFileCache() });
+    const raw = readStore();
+    const date = Object.keys(raw.days).sort().pop();
+    const good = raw.days[date].byModel;
+    // What a build before the fix recorded: the same tokens, all in 'other'.
+    const other = { ...raw.days[date].totals };
+    raw.days[date].byModel = { other };
+    writeFileAtomic(storeFile(), JSON.stringify(raw));
+
+    view({ days: 7, cache: new UsageFileCache() });
+    assert.deepEqual(readStore().days[date].byModel, good);
+  });
+
   test('a build writes <monitorDir>/usage/daily.json with version 1', () => {
     const d = view({ days: 7, cache: new UsageFileCache() });
     const raw = readStore();

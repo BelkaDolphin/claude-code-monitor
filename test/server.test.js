@@ -1015,12 +1015,42 @@ describe('browser review 2026-09-03: what the shipped UI does', () => {
     assert.match(css, /\.agent--stale/);
   });
 
-  test('model names are table driven and unknown ids pass through (item 7)', () => {
+  test('model names are table driven and ids of an unknown family pass through (item 7)', () => {
     assert.match(js, /var MODEL_LABEL = \{/);
     assert.match(js, /'claude-haiku-4-5': /);
-    // Only a trailing release date is stripped before the lookup.
+    // A trailing release date is stripped before the second lookup; the
+    // context suffix and the family-prefix fallback are covered below.
     assert.match(js, /replace\(\/-\\d\{8\}\$\/, ''\)/);
     assert.match(js, /return id;/);
+  });
+
+  test('an id missing from MODEL_LABEL falls back to its family prefix (issue #3)', () => {
+    const fn = bodyOf(js, 'function modelLabel(id) {');
+    // The fallback may only resolve through MODEL_LABEL's alias keys, so an
+    // unknown family still passes through verbatim.
+    assert.match(fn, /\^claude-\(\[a-z\]\+\)-/);
+    assert.match(fn, /has\.call\(MODEL_LABEL, family\[1\]\)/);
+    assert.ok(fn.indexOf('has.call(MODEL_LABEL, family[1])') < fn.lastIndexOf('return id;'));
+  });
+
+  test('modelLabel, run for real, folds new versions and leaves unknown ids alone (issue #3)', () => {
+    // Evaluate the shipped table and function, not a copy of them.
+    const table = bodyOf(js, 'var MODEL_LABEL = {') + '\n  };\n';
+    const fn = bodyOf(js, 'function modelLabel(id) {') + '\n  }\n';
+    const modelLabel = vm.runInNewContext(`${table}${fn}modelLabel;`, {});
+    const cases = [
+      ['claude-opus-5-5', 'Opus'],
+      ['claude-opus-5-5[1m]', 'Opus'],
+      ['opus[1m]', 'Opus'],
+      ['claude-sonnet-6-20270101', 'Sonnet'],
+      ['CLAUDE-FABLE-6', 'Fable'],
+      ['claude-haiku-4-5-20251001', 'Haiku'],
+      ['claude-newfamily-1', 'claude-newfamily-1'],
+      ['<synthetic>', '<synthetic>'],
+      ['claude-constructor-1', 'claude-constructor-1'],
+      ['', ''],
+    ];
+    for (const [id, want] of cases) assert.equal(modelLabel(id), want, id);
   });
 
   test('the new markup still has no inline script, style or handler', () => {

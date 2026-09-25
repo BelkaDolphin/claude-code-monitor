@@ -74,8 +74,11 @@ const MTIME_MARGIN_MS = 2 * 24 * 60 * 60 * 1000;
  * exists so the FRONTEND needs no second table - the API already hands out
  * series names.
  *
- * Table driven on purpose (same reasoning as app.js): an id we do not
- * recognise is bucketed as 'other' rather than guessed at by a clever rule.
+ * The table is tried first; an id it does not list falls back to its family
+ * prefix (`claude-<family>-...`), so a new version such as claude-opus-5-5
+ * (issue #3) needs no edit here. Only the family names the table has alias
+ * rows for are accepted - an unknown family, or a non-model like `<synthetic>`, still
+ * lands in 'other' rather than being guessed at.
  */
 const MODEL_SERIES = {
   opus: 'Opus',
@@ -102,11 +105,17 @@ export const SERIES = ['Opus', 'Sonnet', 'Haiku', 'Fable', 'other'];
 /** @param {string|null} id @returns {string} one of SERIES */
 export function modelSeries(id) {
   if (typeof id !== 'string' || !id) return 'other';
-  const key = id.toLowerCase();
-  if (MODEL_SERIES[key]) return MODEL_SERIES[key];
+  // A context suffix ("opus[1m]", "claude-fable-5-1[1m]") names no model.
+  const key = id.toLowerCase().replace(/\[[^\]]*\]$/, '');
+  // Object.hasOwn: an id like "constructor" must not hit Object.prototype.
+  if (Object.hasOwn(MODEL_SERIES, key)) return MODEL_SERIES[key];
   // Strip a trailing release date (claude-haiku-4-5-20251001) and retry.
   const undated = key.replace(/-\d{8}$/, '');
-  if (MODEL_SERIES[undated]) return MODEL_SERIES[undated];
+  if (Object.hasOwn(MODEL_SERIES, undated)) return MODEL_SERIES[undated];
+  // A version the table has not caught up with: go by the family prefix,
+  // resolved through the table's alias rows so an unknown family stays 'other'.
+  const family = /^claude-([a-z]+)-/.exec(key);
+  if (family && Object.hasOwn(MODEL_SERIES, family[1])) return MODEL_SERIES[family[1]];
   return 'other';
 }
 
@@ -124,6 +133,14 @@ function addTotals(target, totals) {
   for (const m of METRICS) target[m] += num(totals[m]);
   target.count += num(totals.count);
   return target;
+}
+
+/** Whether two per-series maps give every series the same totalTokens. */
+function sameSplit(a, b) {
+  const ka = Object.keys(a ?? {});
+  const kb = Object.keys(b ?? {});
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => Object.hasOwn(b, k) && num(a[k]?.totalTokens) === num(b[k]?.totalTokens));
 }
 
 function sortKeys(o) {
@@ -543,7 +560,14 @@ export function buildUsageView(opts = {}) {
   for (const date of Object.keys(byDate)) {
     const live = { msgs: byDate[date].count, totals: byDate[date], byModel: byDateModel[date] ?? {} };
     const prev = stored[date];
-    if (prev && num(prev.totals.totalTokens) >= live.totals.totalTokens) continue;
+    if (prev) {
+      const prevTotal = num(prev.totals.totalTokens);
+      if (prevTotal > live.totals.totalTokens) continue;
+      // Same total but a different split: the series mapping changed (issue
+      // #3 moved claude-opus-5-5 out of 'other'). Without this the stale split
+      // would come back once the transcripts are cleaned up.
+      if (prevTotal === live.totals.totalTokens && sameSplit(prev.byModel, live.byModel)) continue;
+    }
     nextStore[date] = {
       msgs: live.msgs,
       totals: live.totals,
