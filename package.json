@@ -1,6 +1,6 @@
 {
   "name": "claude-code-monitor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local, dependency-free dashboard for Claude Code: live session/tool status, subagent tree, token usage, notification settings, and a Windows tray/autostart-capable server.",
   "private": true,
   "license": "MIT",
